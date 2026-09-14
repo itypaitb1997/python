@@ -1,0 +1,73 @@
+"""Heartbeat worker sending regular health updates to cloud backend."""
+import threading
+import time
+from typing import Optional
+from app.api_client import ApiClient
+from app.device_identity import DeviceIdentity
+from app.health_monitor import HealthMonitor
+from app.logger import setup_logger
+from app.constants import DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_AGENT_VERSION
+
+logger = setup_logger("heartbeat")
+
+
+class HeartbeatWorker(threading.Thread):
+    def __init__(
+        self,
+        api_client: ApiClient,
+        identity: DeviceIdentity,
+        health_monitor: HealthMonitor,
+        interval: int = DEFAULT_HEARTBEAT_INTERVAL,
+    ):
+        super().__init__(daemon=True, name="HeartbeatWorker")
+        self.api_client = api_client
+        self.identity = identity
+        self.health_monitor = health_monitor
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self.last_test_at: Optional[str] = None
+        self.config_version: int = 1
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        logger.info(f"Heartbeat worker started (interval: {self.interval}s)")
+        while not self._stop_event.is_set():
+            try:
+                self.send_heartbeat()
+            except Exception as e:
+                logger.warning(f"Heartbeat error: {e}")
+
+            # Sleep with responsive stop check
+            if self._stop_event.wait(timeout=self.interval):
+                break
+        logger.info("Heartbeat worker stopped")
+
+    def send_heartbeat(self) -> bool:
+        metrics = self.health_monitor.get_metrics()
+        payload = {
+            "device_uuid": self.identity.device_uuid,
+            "agent_version": DEFAULT_AGENT_VERSION,
+            "config_version": self.config_version,
+            "registration_status": self.identity.get_status(),
+            "connection_status": "ONLINE",
+            "ip_address": metrics["ip_address"],
+            "mac_address": self.identity.mac_address,
+            "cpu_usage": metrics["cpu_usage"],
+            "ram_usage": metrics["ram_usage"],
+            "disk_usage": metrics["disk_usage"],
+            "temperature": metrics["temperature"],
+            "uptime": metrics["uptime"],
+            "last_test_at": self.last_test_at,
+            "os_version": metrics["os_version"],
+            "service_status": "RUNNING",
+        }
+
+        resp = self.api_client.post("agent/heartbeat", json=payload, max_retries=1)
+        if resp.status_code in (200, 201):
+            logger.debug("Heartbeat successfully sent")
+            return True
+        else:
+            logger.warning(f"Heartbeat rejected: HTTP {resp.status_code}")
+            return False

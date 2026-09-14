@@ -1,0 +1,18 @@
+[Unit]
+Description=FarLink Edge & Go Agent Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/farlink/python
+ExecStart=/usr/bin/python3 -m app.main
+Restart=always
+RestartSec=5s
+EnvironmentFile=-/etc/farlink/agent.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

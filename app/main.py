@@ -2,7 +2,7 @@
 import sys
 import time
 import signal
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from app.config import config
 from app.logger import setup_logger
 from app.database import Database

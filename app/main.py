@@ -57,10 +57,29 @@ class FarlinkAgent:
 
         self.running = True
 
+    def _apply_config_updates(self) -> None:
+        """Apply active config updates to running workers."""
+        cfg = self.config_manager.active_config
+        hb_interval = int(cfg.get("heartbeat_interval", config.heartbeat_interval))
+        self.heartbeat_worker.set_interval(hb_interval)
+        self.heartbeat_worker.config_version = self.config_manager.get_active_version()
+
+    def _sync_config_command(self, payload: Dict[str, Any]) -> bool:
+        logger.info("SYNC_CONFIG command received from web")
+        if self.config_manager.fetch_and_sync():
+            self._apply_config_updates()
+        return True
+
+    def _sync_data_command(self, payload: Dict[str, Any]) -> bool:
+        logger.info("SYNC_DATA command received from web: syncing local SQLite test results")
+        synced = self.sync_manager.sync_pending()
+        logger.info(f"SYNC_DATA completed: {synced} test results synced to web")
+        return True
+
     def _register_commands(self) -> None:
-        self.command_worker.register_handler("SYNC_CONFIG", lambda p: self.config_manager.fetch_and_sync())
+        self.command_worker.register_handler("SYNC_CONFIG", self._sync_config_command)
         self.command_worker.register_handler("RUN_TEST", lambda p: self.run_test_command(p))
-        self.command_worker.register_handler("SYNC_DATA", lambda p: self.sync_manager.sync_pending() >= 0)
+        self.command_worker.register_handler("SYNC_DATA", self._sync_data_command)
         self.command_worker.register_handler("RESTART_AGENT", lambda p: self.stop())
 
     def on_start_button(self) -> None:
@@ -106,14 +125,22 @@ class FarlinkAgent:
         self.heartbeat_worker.start()
         self.command_worker.start()
 
+        # Check for remote config on boot
+        if self.config_manager.fetch_and_sync():
+            self._apply_config_updates()
+
         sync_counter = 0
         while self.running:
             try:
                 time.sleep(5)
                 sync_counter += 5
-                if sync_counter >= 30:
+                active_cfg = self.config_manager.active_config
+                sync_interval = int(active_cfg.get("sync_interval", 60))
+
+                if sync_counter >= sync_interval:
                     self.sync_manager.sync_pending()
-                    self.config_manager.fetch_and_sync()
+                    if self.config_manager.fetch_and_sync():
+                        self._apply_config_updates()
                     sync_counter = 0
             except KeyboardInterrupt:
                 break

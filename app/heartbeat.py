@@ -31,6 +31,12 @@ class HeartbeatWorker(threading.Thread):
     def stop(self) -> None:
         self._stop_event.set()
 
+    def set_interval(self, new_interval: int) -> None:
+        """Update heartbeat interval dynamically."""
+        if new_interval > 0 and new_interval != self.interval:
+            logger.info(f"Heartbeat interval updated: {self.interval}s -> {new_interval}s")
+            self.interval = new_interval
+
     def run(self) -> None:
         logger.info(f"Heartbeat worker started (interval: {self.interval}s)")
         while not self._stop_event.is_set():

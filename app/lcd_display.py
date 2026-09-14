@@ -23,20 +23,20 @@ class LCDDisplay:
             logger.info("Hardware I2C LCD initialized successfully")
         except Exception as e:
             self.is_hardware_available = False
-            logger.info(f"LCD hardware not available (running in software mock mode): {e}")
+            logger.debug(f"LCD hardware not detected ({e}); running in headless mode")
 
     def display_status(self, line1: str, line2: str = "") -> None:
-        """Display two lines of status text (16 chars max per line)."""
+        """Display two lines of status text if hardware LCD is connected."""
+        if not self.is_hardware_available:
+            return  # Headless mode: skip mock output per user requirement
+
         l1 = line1[:self.cols].ljust(self.cols)
         l2 = line2[:self.cols].ljust(self.cols)
-
-        if self.is_hardware_available:
-            pass  # Hardware write commands
-        else:
-            logger.info(f"[LCD MOCK] | {l1} |")
-            logger.info(f"[LCD MOCK] | {l2} |")
+        # Hardware I2C write commands here when connected
 
     def show_test_result(self, dl_mbps: float, ul_mbps: float, latency: Optional[float] = None) -> None:
+        if not self.is_hardware_available:
+            return
         l1 = f"DL:{dl_mbps:0.1f}M UL:{ul_mbps:0.1f}M"
         l2 = f"Ping:{latency:0.1f}ms" if latency is not None else "Test Complete"
         self.display_status(l1, l2)

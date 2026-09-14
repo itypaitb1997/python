@@ -18,6 +18,7 @@ from app.test_runner import TestRunner
 from app.lcd_display import LCDDisplay
 from app.button_handler import ButtonHandler
 from app.network_diagnostics import NetworkDiagnostics
+from app.cli_display import CLIDisplay
 
 logger = setup_logger("agent_main", log_file=config.log_path)
 
@@ -82,6 +83,20 @@ class FarlinkAgent:
         self.command_worker.register_handler("SYNC_DATA", self._sync_data_command)
         self.command_worker.register_handler("RESTART_AGENT", lambda p: self.stop())
 
+    def _render_dashboard(self, last_test: Optional[Dict[str, Any]] = None) -> None:
+        """Render live terminal dashboard tables."""
+        try:
+            CLIDisplay.render(
+                identity=self.identity,
+                health=self.health,
+                db=self.db,
+                active_config=self.config_manager.active_config,
+                api_url=config.api_url,
+                last_test=last_test,
+            )
+        except Exception as e:
+            logger.debug(f"CLI display render error: {e}")
+
     def on_start_button(self) -> None:
         logger.info("Start test triggered by physical button")
         self.lcd.display_status("Starting Test...", "Please wait")
@@ -93,6 +108,7 @@ class FarlinkAgent:
             ul_mbps=result["upload_mbps"],
             latency=result.get("latency_ms"),
         )
+        self._render_dashboard(last_test=result)
 
     def on_reset_button(self) -> None:
         logger.info("Reset triggered by physical button")
@@ -101,12 +117,14 @@ class FarlinkAgent:
         diag = NetworkDiagnostics.run_full_diagnostics()
         status_line = "Net: OK" if diag.get("internet_connected") else "Net: Offline"
         self.lcd.display_status(f"Claim: {self.identity.claim_code}", status_line)
+        self._render_dashboard()
 
     def run_test_command(self, payload: Dict[str, Any]) -> bool:
         server_ip = payload.get("server_ip")
         res = self.test_runner.run_speed_test(server_ip=server_ip)
         self.sync_manager.enqueue_result(res)
         self.heartbeat_worker.last_test_at = res["finished_at"]
+        self._render_dashboard(last_test=res)
         return True
 
     def start(self) -> None:
@@ -129,6 +147,9 @@ class FarlinkAgent:
         if self.config_manager.fetch_and_sync():
             self._apply_config_updates()
 
+        # Initial dashboard render
+        self._render_dashboard()
+
         sync_counter = 0
         while self.running:
             try:
@@ -142,6 +163,9 @@ class FarlinkAgent:
                     if self.config_manager.fetch_and_sync():
                         self._apply_config_updates()
                     sync_counter = 0
+
+                # Live periodic refresh
+                self._render_dashboard()
             except KeyboardInterrupt:
                 break
 

@@ -109,3 +109,36 @@ class Database:
                     created_at TEXT NOT NULL
                 )
             """)
+
+    def get_latest_test_result(self) -> Optional[dict]:
+        """Fetch the most recent test result from SQLite."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT * FROM test_results ORDER BY finished_at DESC LIMIT 1"
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception:
+            return None
+
+    def get_test_results_count(self) -> int:
+        """Fetch total count of test results stored in SQLite."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM test_results")
+                return cursor.fetchone()[0]
+        except Exception:
+            return 0
+
+    def get_pending_sync_count(self) -> int:
+        """Fetch count of pending items in sync queue."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM sync_queue WHERE status = 'PENDING'")
+                return cursor.fetchone()[0]
+        except Exception:
+            return 0

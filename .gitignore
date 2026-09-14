@@ -8,8 +8,10 @@ ENV/
 __pycache__/
 *.py[cod]
 *$py.class
-
-
+# SQLite local databases (setiap perangkat memiliki database & UUID unik sendiri)
+*.db
+*.sqlite
+*.sqlite3
 
 # Logs
 *.log

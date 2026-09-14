@@ -8,11 +8,23 @@ from app.constants import (
     DEFAULT_PIN_RESET,
 )
 
+from pathlib import Path
+
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(dotenv_path=ENV_PATH)
 except ImportError:
-    pass
+    if ENV_PATH.exists():
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k not in os.environ:
+                        os.environ[k] = v
 
 
 

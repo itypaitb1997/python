@@ -31,7 +31,7 @@ except ImportError:
 
 @dataclass
 class AppConfig:
-    api_url: str = os.getenv("FARLINK_API_URL", "http://localhost:3000/api")
+    api_url: str = os.getenv("FARLINK_API_URL", "http://192.168.1.2:5000/api")
     db_path: str = os.getenv("FARLINK_DB_PATH", "farlink.db")
     log_path: str = os.getenv("FARLINK_LOG_PATH", "farlink.log")
     log_level: str = os.getenv("FARLINK_LOG_LEVEL", "INFO")

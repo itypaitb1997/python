@@ -22,23 +22,44 @@ class NetworkDiagnostics:
 
     @staticmethod
     def ping_latency(target: str = "8.8.8.8", count: int = 3) -> Dict[str, Any]:
-        """Ping a target IP or host and return average latency and packet loss."""
+        """Ping a target IP or host and return average latency, jitter (mdev/stddev), and packet loss."""
         cmd = ["ping", "-c", str(count), "-W", "2", target]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if res.returncode == 0:
-                # Parse ping output
+                avg_ms = 1.0
+                jitter_ms = 0.0
+                loss_percent = 0.0
+
                 for line in res.stdout.splitlines():
-                    if "avg" in line or "round-trip" in line:
-                        parts = line.split("=")[1].strip().split("/")
-                        avg_ms = float(parts[1])
-                        return {"success": True, "latency_ms": avg_ms, "loss_percent": 0.0}
-                return {"success": True, "latency_ms": 1.0, "loss_percent": 0.0}
+                    if "% packet loss" in line:
+                        try:
+                            parts = line.split("% packet loss")[0].split(",")
+                            loss_percent = float(parts[-1].strip().split()[-1].replace("%", ""))
+                        except Exception:
+                            pass
+                    if "avg" in line or "round-trip" in line or "rtt" in line:
+                        try:
+                            stats_str = line.split("=")[1].strip().split()[0]
+                            parts = stats_str.split("/")
+                            min_ms = float(parts[0])
+                            avg_ms = float(parts[1])
+                            max_ms = float(parts[2])
+                            jitter_ms = float(parts[3]) if len(parts) > 3 else round(max_ms - min_ms, 2)
+                        except Exception:
+                            pass
+
+                return {
+                    "success": True,
+                    "latency_ms": round(avg_ms, 2),
+                    "jitter_ms": round(jitter_ms, 2),
+                    "loss_percent": round(loss_percent, 1),
+                }
             else:
-                return {"success": False, "latency_ms": None, "loss_percent": 100.0}
+                return {"success": False, "latency_ms": None, "jitter_ms": None, "loss_percent": 100.0}
         except Exception as e:
             logger.debug(f"Ping exception: {e}")
-            return {"success": False, "latency_ms": None, "loss_percent": 100.0}
+            return {"success": False, "latency_ms": None, "jitter_ms": None, "loss_percent": 100.0}
 
     @staticmethod
     def get_interface_stats() -> List[Dict[str, Any]]:

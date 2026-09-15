@@ -26,21 +26,22 @@ class TestRunner:
 
         download_mbps = 0.0
         upload_mbps = 0.0
-        jitter_ms = None
-        packet_loss = None
+        jitter_ms = diag.get("jitter_ms")
+        packet_loss = diag.get("loss_percent", 0.0)
 
         if server_ip:
             # iPerf3 execution
             res = self.iperf.run_client(server_ip=server_ip, duration=5)
             download_mbps = res.get("bandwidth_mbps", 0.0)
             upload_mbps = download_mbps
-            jitter_ms = res.get("jitter_ms")
-            packet_loss = res.get("packet_loss")
+            if res.get("jitter_ms") is not None:
+                jitter_ms = res.get("jitter_ms")
+            if res.get("packet_loss") is not None:
+                packet_loss = res.get("packet_loss")
         else:
             # Standalone latency / diagnostics measurement
             download_mbps = 45.2
             upload_mbps = 20.8
-            packet_loss = diag.get("loss_percent", 0.0)
 
         finished_at = get_utc_now()
 

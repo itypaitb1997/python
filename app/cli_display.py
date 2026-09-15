@@ -153,7 +153,6 @@ class CLIDisplay:
             f"{status_bullet:<16} Last Test: {last_test_str}",
             f"Result: {result_grade}",
             sep,
-            "[ START TEST ]   [ RESET ]       [ SYNC ]             [ SETTINGS ]",
         ]
 
         screen_output = "\n".join(lines)

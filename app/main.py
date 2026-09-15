@@ -102,8 +102,16 @@ class FarlinkAgent:
         logger.info("RESTART_AGENT command received: scheduling restart")
         def _delayed_stop():
             import time
-            time.sleep(1.5)
-            self.stop()
+            import os
+            time.sleep(2.0)
+            logger.info("Restarting agent process...")
+            self.shutdown()
+            try:
+                import subprocess
+                subprocess.run(["sudo", "systemctl", "restart", "farlink-agent"], timeout=5)
+            except Exception:
+                pass
+            os._exit(0)
         threading.Thread(target=_delayed_stop, daemon=True).start()
         return True
 
@@ -133,6 +141,7 @@ class FarlinkAgent:
         self.lcd.display_status("Starting Test...", "Please wait")
         result = self.test_runner.run_speed_test()
         self.sync_manager.enqueue_result(result)
+        self.sync_manager.sync_pending()
         self.heartbeat_worker.last_test_at = result["finished_at"]
         self.lcd.show_test_result(
             dl_mbps=result["download_mbps"],
@@ -154,6 +163,7 @@ class FarlinkAgent:
         server_ip = payload.get("server_ip")
         res = self.test_runner.run_speed_test(server_ip=server_ip)
         self.sync_manager.enqueue_result(res)
+        self.sync_manager.sync_pending()
         self.heartbeat_worker.last_test_at = res["finished_at"]
         self._render_dashboard(last_test=res)
         return True

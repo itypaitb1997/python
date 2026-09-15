@@ -94,7 +94,16 @@ class CommandWorker(threading.Thread):
                 success = self.handlers[command_name](payload)
             elif command_name == "REBOOT_DEVICE":
                 self._send_ack(cmd_id, CommandStatus.SUCCESS.value)
-                subprocess.Popen(["reboot"])
+                def _do_reboot():
+                    import time
+                    time.sleep(1.5)
+                    for cmd in [["sudo", "systemctl", "reboot"], ["systemctl", "reboot"], ["sudo", "reboot"], ["reboot"]]:
+                        try:
+                            subprocess.run(cmd, check=True)
+                            break
+                        except Exception:
+                            continue
+                threading.Thread(target=_do_reboot, daemon=True).start()
                 return
             elif command_name == "SHUTDOWN_DEVICE":
                 self._send_ack(cmd_id, CommandStatus.SUCCESS.value)

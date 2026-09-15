@@ -18,6 +18,7 @@ class CommandWorker(threading.Thread):
         db: Database,
         handlers: Optional[Dict[str, Callable[[Dict[str, Any]], bool]]] = None,
         poll_interval: int = 15,
+        identity: Optional[Any] = None,
     ):
         super().__init__(daemon=True, name="CommandWorker")
         self.api_client = api_client
@@ -25,6 +26,7 @@ class CommandWorker(threading.Thread):
         self.poll_interval = poll_interval
         self._stop_event = threading.Event()
         self.handlers = handlers or {}
+        self.identity = identity
 
     def register_handler(self, command_name: str, handler: Callable[[Dict[str, Any]], bool]) -> None:
         self.handlers[command_name] = handler
@@ -45,7 +47,11 @@ class CommandWorker(threading.Thread):
         logger.info("Command worker stopped")
 
     def poll_commands(self) -> None:
-        resp = self.api_client.get("agent/commands", max_retries=1)
+        url = "agent/commands"
+        uuid_val = getattr(self.identity, "device_uuid", None) or getattr(self.api_client, "_device_uuid", None)
+        if uuid_val:
+            url = f"agent/commands?device_uuid={uuid_val}"
+        resp = self.api_client.get(url, max_retries=1)
         if resp.status_code != 200:
             return
 

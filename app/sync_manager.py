@@ -1,7 +1,7 @@
 """Offline queue and synchronization manager for test results."""
 import json
 import uuid
-from typing import Optional
+from typing import Optional, Any
 from app.api_client import ApiClient
 from app.database import Database, get_utc_now
 from app.logger import setup_logger
@@ -11,12 +11,16 @@ logger = setup_logger("sync_manager")
 
 
 class SyncManager:
-    def __init__(self, db: Database, api_client: ApiClient):
+    def __init__(self, db: Database, api_client: ApiClient, identity: Optional[Any] = None):
         self.db = db
         self.api_client = api_client
+        self.identity = identity
 
     def enqueue_result(self, result_dict: dict) -> str:
         """Store test result in local SQLite and queue for sync."""
+        if self.identity and "device_uuid" not in result_dict:
+            result_dict["device_uuid"] = self.identity.device_uuid
+
         result_id = result_dict.get("id") or str(uuid.uuid4())
         now = get_utc_now()
 

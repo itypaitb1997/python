@@ -29,15 +29,16 @@ class FarlinkAgent:
         self.db = Database(config.db_path)
         self.identity = DeviceIdentity(self.db)
         self.api_client = ApiClient(config.api_url, timeout=config.http_timeout)
+        self.api_client.set_device_uuid(self.identity.device_uuid)
         self.auth = AuthManager(self.api_client, self.identity)
         self.health = HealthMonitor()
         self.test_runner = TestRunner()
-        self.sync_manager = SyncManager(self.db, self.api_client)
+        self.sync_manager = SyncManager(self.db, self.api_client, identity=self.identity)
         self.config_manager = ConfigManager(self.db, self.api_client)
         self.lcd = LCDDisplay()
 
         # Remote command worker
-        self.command_worker = CommandWorker(self.api_client, self.db)
+        self.command_worker = CommandWorker(self.api_client, self.db, identity=self.identity)
         self._register_commands()
 
         # Heartbeat worker
@@ -77,11 +78,41 @@ class FarlinkAgent:
         logger.info(f"SYNC_DATA completed: {synced} test results synced to web")
         return True
 
+    def _upload_log_command(self, payload: Dict[str, Any]) -> bool:
+        logger.info("UPLOAD_LOG command received from web")
+        try:
+            import os
+            log_lines = []
+            for path in ("agent.log", "farlink_agent.log", "app.log"):
+                if os.path.exists(path):
+                    with open(path, "r") as f:
+                        log_lines = f.readlines()[-50:]
+                    break
+            self.api_client.post("agent/logs", json={
+                "device_uuid": self.identity.device_uuid,
+                "level": "INFO",
+                "logs": "".join(log_lines),
+            })
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to upload log: {e}")
+            return False
+
+    def _restart_agent_command(self, payload: Dict[str, Any]) -> bool:
+        logger.info("RESTART_AGENT command received: scheduling restart")
+        def _delayed_stop():
+            import time
+            time.sleep(1.5)
+            self.stop()
+        threading.Thread(target=_delayed_stop, daemon=True).start()
+        return True
+
     def _register_commands(self) -> None:
         self.command_worker.register_handler("SYNC_CONFIG", self._sync_config_command)
         self.command_worker.register_handler("RUN_TEST", lambda p: self.run_test_command(p))
         self.command_worker.register_handler("SYNC_DATA", self._sync_data_command)
-        self.command_worker.register_handler("RESTART_AGENT", lambda p: self.stop())
+        self.command_worker.register_handler("UPLOAD_LOG", self._upload_log_command)
+        self.command_worker.register_handler("RESTART_AGENT", self._restart_agent_command)
 
     def _render_dashboard(self, last_test: Optional[Dict[str, Any]] = None) -> None:
         """Render live terminal dashboard tables."""

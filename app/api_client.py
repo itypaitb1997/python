@@ -28,6 +28,14 @@ class ApiClient:
         self.timeout = timeout
         self.session = requests.Session()
         self._token: Optional[str] = None
+        self._device_uuid: Optional[str] = None
+
+    def set_device_uuid(self, device_uuid: Optional[str]) -> None:
+        self._device_uuid = device_uuid
+        if device_uuid:
+            self.session.headers.update({"X-Device-UUID": device_uuid})
+        else:
+            self.session.headers.pop("X-Device-UUID", None)
 
     def set_token(self, token: Optional[str]) -> None:
         self._token = token

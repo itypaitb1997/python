@@ -57,6 +57,8 @@ class FarlinkAgent:
             on_reset_press=self.on_reset_button,
         )
 
+        self.server_connected: bool = False
+        self.latest_notification: str = "Initializing FarLink Go Agent..."
         self.running = True
 
     def _apply_config_updates(self) -> None:
@@ -112,6 +114,7 @@ class FarlinkAgent:
             except Exception:
                 pass
             os._exit(0)
+        import threading
         threading.Thread(target=_delayed_stop, daemon=True).start()
         return True
 
@@ -122,9 +125,10 @@ class FarlinkAgent:
         self.command_worker.register_handler("UPLOAD_LOG", self._upload_log_command)
         self.command_worker.register_handler("RESTART_AGENT", self._restart_agent_command)
 
-    def _render_dashboard(self, last_test: Optional[Dict[str, Any]] = None) -> None:
-        """Render live terminal dashboard tables."""
+    def _render_dashboard(self, last_test: Optional[Dict[str, Any]] = None, test_running: bool = False) -> None:
+        """Render live Matrix 3.5 inch terminal dashboard in English."""
         try:
+            pending_count = self.sync_manager.get_pending_count()
             CLIDisplay.render(
                 identity=self.identity,
                 health=self.health,
@@ -132,31 +136,59 @@ class FarlinkAgent:
                 active_config=self.config_manager.active_config,
                 api_url=config.api_url,
                 last_test=last_test,
+                test_running=test_running,
+                server_connected=self.server_connected,
+                notification=self.latest_notification,
+                pending_sync_count=pending_count,
             )
         except Exception as e:
             logger.debug(f"CLI display render error: {e}")
 
     def on_start_button(self) -> None:
         logger.info("Start test triggered by physical button")
+        self.latest_notification = "Running diagnostic speed test... Please wait."
         self.lcd.display_status("Starting Test...", "Please wait")
+        self._render_dashboard(test_running=True)
+
         result = self.test_runner.run_speed_test()
         self.sync_manager.enqueue_result(result)
-        self.sync_manager.sync_pending()
+        
+        # Try syncing if online
+        synced = self.sync_manager.sync_pending()
+        self.server_connected = self.api_client.is_connected
+        pending_cnt = self.sync_manager.get_pending_count()
+
+        if self.server_connected:
+            self.latest_notification = f"Test finished (DL: {result['download_mbps']} Mbps). Synced with cloud."
+        else:
+            self.latest_notification = f"Test finished (DL: {result['download_mbps']} Mbps). Saved locally ({pending_cnt} queued)."
+
         self.heartbeat_worker.last_test_at = result["finished_at"]
         self.lcd.show_test_result(
             dl_mbps=result["download_mbps"],
             ul_mbps=result["upload_mbps"],
             latency=result.get("latency_ms"),
         )
-        self._render_dashboard(last_test=result)
+        self._render_dashboard(last_test=result, test_running=False)
 
     def on_reset_button(self) -> None:
         logger.info("Reset triggered by physical button")
+        self.latest_notification = "Re-evaluating network diagnostics & connection..."
         self.lcd.display_status("Device Resetting", "Re-init network")
-        # Trigger network diagnostic
+        
+        # Trigger network diagnostic and probe server
         diag = NetworkDiagnostics.run_full_diagnostics()
-        status_line = "Net: OK" if diag.get("internet_connected") else "Net: Offline"
-        self.lcd.display_status(f"Claim: {self.identity.claim_code}", status_line)
+        self.server_connected = self.api_client.check_connection(timeout=2)
+
+        if self.server_connected:
+            srv_msg = "Server: Connected"
+            self.latest_notification = "Network re-checked: Internet & FarLink Cloud ONLINE."
+        else:
+            srv_msg = "Server: Disconnected"
+            self.latest_notification = "Network re-checked: Standalone offline mode active."
+
+        net_msg = "Net: OK" if diag.get("internet_connected") else "Net: Offline"
+        self.lcd.display_status(f"Claim: {self.identity.claim_code}", f"{net_msg} | {srv_msg}")
         self._render_dashboard()
 
     def run_test_command(self, payload: Dict[str, Any]) -> bool:
@@ -164,7 +196,9 @@ class FarlinkAgent:
         res = self.test_runner.run_speed_test(server_ip=server_ip)
         self.sync_manager.enqueue_result(res)
         self.sync_manager.sync_pending()
+        self.server_connected = self.api_client.is_connected
         self.heartbeat_worker.last_test_at = res["finished_at"]
+        self.latest_notification = f"Remote test completed (DL: {res['download_mbps']} Mbps)."
         self._render_dashboard(last_test=res)
         return True
 
@@ -172,37 +206,63 @@ class FarlinkAgent:
         logger.info(f"Agent Device UUID: {self.identity.device_uuid}")
         logger.info(f"Agent Claim Code: {self.identity.claim_code}")
 
+        # Check server connection on startup
+        self.server_connected = self.api_client.check_connection(timeout=2)
+        if self.server_connected:
+            self.latest_notification = "Connected to FarLink Cloud. Synchronizing..."
+            self.auth.register_device()
+        else:
+            self.latest_notification = "Server disconnected. Operating in offline standalone mode."
+            logger.info("[OFFLINE] Operating in standalone offline mode. All metrics stored locally.")
+
         self.lcd.display_status(
             f"ID:{self.identity.claim_code[:12]}",
-            f"Stat:{self.identity.get_status()}"
+            "ONLINE" if self.server_connected else "OFFLINE"
         )
-
-        # Attempt initial registration
-        self.auth.register_device()
 
         # Start workers
         self.heartbeat_worker.start()
         self.command_worker.start()
 
-        # Check for remote config on boot
-        if self.config_manager.fetch_and_sync():
+        # Check for remote config on boot if connected
+        if self.server_connected and self.config_manager.fetch_and_sync():
             self._apply_config_updates()
 
         # Initial dashboard render
         self._render_dashboard()
 
         sync_counter = 0
+        connection_check_counter = 0
+
         while self.running:
             try:
-                time.sleep(5)
-                sync_counter += 5
+                time.sleep(3)
+                sync_counter += 3
+                connection_check_counter += 3
+
+                # Periodically probe server status
+                if connection_check_counter >= 15:
+                    prev_state = self.server_connected
+                    self.server_connected = self.api_client.check_connection(timeout=2)
+                    connection_check_counter = 0
+
+                    # Detect transition from offline -> online
+                    if not prev_state and self.server_connected:
+                        logger.info("[RECONNECTED] Server connection restored. Synchronizing queued data...")
+                        self.auth.register_device()
+                        synced = self.sync_manager.sync_pending()
+                        if self.config_manager.fetch_and_sync():
+                            self._apply_config_updates()
+                        self.latest_notification = f"Server reconnected! {synced} test results automatically synced."
+
                 active_cfg = self.config_manager.active_config
                 sync_interval = int(active_cfg.get("sync_interval", 60))
 
                 if sync_counter >= sync_interval:
-                    self.sync_manager.sync_pending()
-                    if self.config_manager.fetch_and_sync():
-                        self._apply_config_updates()
+                    if self.server_connected:
+                        self.sync_manager.sync_pending()
+                        if self.config_manager.fetch_and_sync():
+                            self._apply_config_updates()
                     sync_counter = 0
 
                 # Live periodic refresh

@@ -29,6 +29,8 @@ class ApiClient:
         self.session = requests.Session()
         self._token: Optional[str] = None
         self._device_uuid: Optional[str] = None
+        self.is_connected: bool = False
+        self.last_error: Optional[str] = None
 
     def set_device_uuid(self, device_uuid: Optional[str]) -> None:
         self._device_uuid = device_uuid
@@ -44,6 +46,23 @@ class ApiClient:
         else:
             self.session.headers.pop("Authorization", None)
 
+    def check_connection(self, timeout: int = 2) -> bool:
+        """Quick health probe to check if cloud server is reachable."""
+        url = f"{self.base_url}/health"
+        try:
+            resp = self.session.get(url, timeout=timeout)
+            self.is_connected = (resp.status_code in (200, 404))  # Any response means host reached
+            self.last_error = None if self.is_connected else f"HTTP {resp.status_code}"
+            return self.is_connected
+        except (requests.ConnectionError, requests.Timeout) as e:
+            self.is_connected = False
+            self.last_error = "Server unreachable"
+            return False
+        except Exception as e:
+            self.is_connected = False
+            self.last_error = str(e)
+            return False
+
     def request_with_retry(
         self,
         method: str,
@@ -58,12 +77,14 @@ class ApiClient:
         for attempt in range(1, max_retries + 1):
             try:
                 response = self.session.request(method, url, **kwargs)
+                self.is_connected = True
+                self.last_error = None
                 return response
             except (requests.ConnectionError, requests.Timeout) as e:
-                logger.warning(
-                    f"HTTP {method} to {endpoint} failed (attempt {attempt}/{max_retries}): {e}"
-                )
+                self.is_connected = False
+                self.last_error = f"Connection error: {e}"
                 if attempt == max_retries:
+                    logger.debug(f"[OFFLINE] HTTP {method} to {endpoint} failed (attempt {attempt}/{max_retries}): {e}")
                     raise
                 time.sleep(delay)
                 delay *= 2  # Exponential backoff
@@ -80,3 +101,4 @@ class ApiClient:
 
     def patch(self, endpoint: str, json: Optional[Dict[str, Any]] = None, **kwargs) -> requests.Response:
         return self.request_with_retry("PATCH", endpoint, json=json, **kwargs)
+

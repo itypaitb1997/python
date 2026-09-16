@@ -102,16 +102,19 @@ class ConfigManager:
     def fetch_and_sync(self) -> bool:
         """Fetch latest configuration from backend and apply if newer."""
         try:
-            resp = self.api_client.get("agent/config")
+            resp = self.api_client.get("agent/config", max_retries=1)
             if resp.status_code == 200:
                 remote_cfg = resp.json()
                 remote_version = remote_cfg.get("version", 0)
                 if remote_version > self.get_active_version():
                     if self.apply_config(remote_cfg):
                         # Send ack to server
-                        self.api_client.post("agent/config/ack", json={"version": remote_version})
+                        try:
+                            self.api_client.post("agent/config/ack", json={"version": remote_version}, max_retries=1)
+                        except Exception:
+                            pass
                         return True
             return False
         except Exception as e:
-            logger.warning(f"Error fetching remote configuration: {e}")
+            logger.debug(f"[CONFIG] Cloud server unreachable ({e}). Using active local config v{self.get_active_version()}.")
             return False

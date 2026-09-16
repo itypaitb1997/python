@@ -43,7 +43,7 @@ class HeartbeatWorker(threading.Thread):
             try:
                 self.send_heartbeat()
             except Exception as e:
-                logger.warning(f"Heartbeat error: {e}")
+                logger.debug(f"[HEARTBEAT] Offline state: Server unreachable ({e})")
 
             # Sleep with responsive stop check
             if self._stop_event.wait(timeout=self.interval):
@@ -57,7 +57,7 @@ class HeartbeatWorker(threading.Thread):
             "agent_version": DEFAULT_AGENT_VERSION,
             "config_version": self.config_version,
             "registration_status": self.identity.get_status(),
-            "connection_status": "ONLINE",
+            "connection_status": "ONLINE" if self.api_client.is_connected else "OFFLINE",
             "ip_address": metrics["ip_address"],
             "mac_address": self.identity.mac_address,
             "cpu_usage": metrics["cpu_usage"],
@@ -70,10 +70,14 @@ class HeartbeatWorker(threading.Thread):
             "service_status": "RUNNING",
         }
 
-        resp = self.api_client.post("agent/heartbeat", json=payload, max_retries=1)
-        if resp.status_code in (200, 201):
-            logger.debug("Heartbeat successfully sent")
-            return True
-        else:
-            logger.warning(f"Heartbeat rejected: HTTP {resp.status_code}")
+        try:
+            resp = self.api_client.post("agent/heartbeat", json=payload, max_retries=1)
+            if resp.status_code in (200, 201):
+                logger.debug("Heartbeat successfully sent")
+                return True
+            else:
+                logger.debug(f"Heartbeat rejected: HTTP {resp.status_code}")
+                return False
+        except Exception as e:
+            logger.debug(f"[HEARTBEAT] Cloud server unreachable ({e}). Postponing heartbeat.")
             return False

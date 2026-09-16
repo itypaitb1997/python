@@ -62,6 +62,17 @@ class SyncManager:
         logger.info(f"Test result {result_id} queued locally for sync")
         return result_id
 
+    def get_pending_count(self) -> int:
+        """Get number of results waiting in the offline queue."""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM sync_queue WHERE status = ?",
+                (SyncStatus.PENDING.value,),
+            )
+            row = cursor.fetchone()
+            return row["cnt"] if row else 0
+
     def sync_pending(self) -> int:
         """Attempt to push all pending items to cloud backend."""
         with self.db.get_connection() as conn:
@@ -71,6 +82,9 @@ class SyncManager:
                 (SyncStatus.PENDING.value,),
             )
             items = cursor.fetchall()
+
+        if not items:
+            return 0
 
         synced_count = 0
         for item in items:
@@ -87,10 +101,17 @@ class SyncManager:
                 else:
                     self._mark_queue_failed(queue_id, retries + 1, f"HTTP {resp.status_code}")
             except Exception as e:
+                self.api_client.is_connected = False
                 self._mark_queue_failed(queue_id, retries + 1, str(e))
+                # If connection failed, break early to avoid lag during offline mode
+                remaining = len(items) - synced_count
+                logger.info(
+                    f"[OFFLINE QUEUE] Server unreachable. {remaining} pending test results safely retained in SQLite."
+                )
+                break
 
         if synced_count > 0:
-            logger.info(f"Successfully synced {synced_count} pending results")
+            logger.info(f"Successfully synced {synced_count} pending results to cloud")
         return synced_count
 
     def _update_queue_status(self, queue_id: str, status: str) -> None:

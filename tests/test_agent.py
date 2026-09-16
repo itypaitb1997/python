@@ -132,6 +132,82 @@ class TestFarlinkAgent(unittest.TestCase):
         self.assertTrue(reset_pressed)
         btn.cleanup()
 
+    def test_offline_server_unreachable_clean_handling(self):
+        # Point to unreachable port/IP
+        offline_api = ApiClient("http://127.0.0.1:59999/api", timeout=1)
+        self.assertFalse(offline_api.check_connection(timeout=1))
+        self.assertFalse(offline_api.is_connected)
+
+    def test_auth_offline_clean_fallback(self):
+        offline_api = ApiClient("http://127.0.0.1:59999/api", timeout=1)
+        ident = DeviceIdentity(self.db)
+        from app.auth import AuthManager
+        auth_mgr = AuthManager(offline_api, ident)
+        # Should return False cleanly without raising exception
+        success = auth_mgr.register_device()
+        self.assertFalse(success)
+        self.assertFalse(offline_api.is_connected)
+
+    def test_sync_manager_offline_queue_retention(self):
+        offline_api = ApiClient("http://127.0.0.1:59999/api", timeout=1)
+        sync_mgr = SyncManager(self.db, offline_api)
+
+        # Enqueue 2 items
+        sync_mgr.enqueue_result({"id": "res-1", "download_mbps": 40.0, "upload_mbps": 10.0})
+        sync_mgr.enqueue_result({"id": "res-2", "download_mbps": 50.0, "upload_mbps": 20.0})
+
+        self.assertGreaterEqual(sync_mgr.get_pending_count(), 2)
+
+        # Syncing while offline should cleanly return 0 and keep items in SQLite
+        synced = sync_mgr.sync_pending()
+        self.assertEqual(synced, 0)
+        self.assertGreaterEqual(sync_mgr.get_pending_count(), 2)
+
+    def test_cli_matrix_display_rendering(self):
+        from app.cli_display import CLIDisplay
+        ident = DeviceIdentity(self.db)
+        health = HealthMonitor()
+        active_cfg = {"version": 1}
+
+        # Should render offline cleanly with FARLINK GO logo and English notice
+        CLIDisplay.render(
+            identity=ident,
+            health=health,
+            db=self.db,
+            active_config=active_cfg,
+            api_url="http://192.168.1.2:5000/api",
+            server_connected=False,
+            notification="Testing offline mode in English",
+            pending_sync_count=3,
+        )
+
+        # Also test with server_connected=True
+        CLIDisplay.render(
+            identity=ident,
+            health=health,
+            db=self.db,
+            active_config=active_cfg,
+            api_url="http://192.168.1.2:5000/api",
+            server_connected=True,
+            notification="Testing online mode in English",
+            pending_sync_count=0,
+        )
+
+    def test_lcd_matrix_card_rendering(self):
+        lcd = LCDDisplay()
+        card_text = lcd.render_matrix_card(
+            claim_code="FLG-TEST01",
+            server_connected=False,
+            dl_mbps=88.5,
+            ul_mbps=42.1,
+            latency=11.2,
+            notification="Server offline - Standalone mode",
+        )
+        self.assertIn("FARLINK GO", card_text)
+        self.assertIn("DISCONNECTED", card_text)
+        self.assertIn("STANDALONE OFFLINE", card_text)
+
 
 if __name__ == "__main__":
     unittest.main()
+

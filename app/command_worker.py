@@ -51,7 +51,12 @@ class CommandWorker(threading.Thread):
         uuid_val = getattr(self.identity, "device_uuid", None) or getattr(self.api_client, "_device_uuid", None)
         if uuid_val:
             url = f"agent/commands?device_uuid={uuid_val}"
-        resp = self.api_client.get(url, max_retries=1)
+        try:
+            resp = self.api_client.get(url, max_retries=1)
+        except Exception as e:
+            logger.debug(f"[COMMAND] Server unreachable ({e}). Polling deferred.")
+            return
+
         if resp.status_code != 200:
             return
 

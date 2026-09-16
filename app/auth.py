@@ -26,7 +26,7 @@ class AuthManager:
             "agent_version": agent_version,
         }
         try:
-            resp = self.api_client.post("devices/register", json=payload, max_retries=2)
+            resp = self.api_client.post("devices/register", json=payload, max_retries=1)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 status = data.get("status", DeviceStatus.PENDING.value)
@@ -41,7 +41,10 @@ class AuthManager:
                 logger.warning(f"Registration API returned HTTP {resp.status_code}: {resp.text}")
                 return False
         except Exception as e:
-            logger.error(f"Failed to register device: {e}")
+            self.api_client.is_connected = False
+            logger.info(
+                f"[OFFLINE MODE] Server unreachable ({e}). Agent running cleanly in standalone offline mode."
+            )
             return False
 
     def is_authenticated(self) -> bool:

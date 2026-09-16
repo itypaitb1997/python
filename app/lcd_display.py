@@ -68,23 +68,22 @@ class LCDDisplay:
         latency: float = 0.0,
         notification: str = "",
     ) -> str:
-        """Format a stunning 3.5-inch Matrix LCD card view in English."""
+        """Format a clean landscape 3.5-inch Matrix LCD card view in English."""
         srv_str = "● ONLINE" if server_connected else "▲ DISCONNECTED"
         srv_mode = "CLOUD SYNC" if server_connected else "STANDALONE OFFLINE"
 
         card = [
-            "┌────────────────────────────────────────────────────┐",
-            "│           █▀▀ █▀█ █▀█ █   █ █▄ █ █▄▀   █▀▀ █▀█     │",
-            "│           █▀  █▀█ █▀▄ █▄▄ █ █ ▀█ █ █   █▄█ █▄█     │",
-            "│                 FARLINK GO MATRIX 3.5\"             │",
-            "├────────────────────────────────────────────────────┤",
-            f"│ ID: {claim_code:<14} SERVER: {srv_str:<15}   │",
-            f"│ MODE: {srv_mode:<16} STORAGE: LOCAL SQLITE       │",
-            "├────────────────────────────────────────────────────┤",
-            f"│ SPEED: DL {dl_mbps:5.1f} Mbps | UL {ul_mbps:5.1f} Mbps | PING {latency:4.1f}ms │",
-            "├────────────────────────────────────────────────────┤",
-            f"│ NOTIFY: {notification[:40]:<42} │",
-            "└────────────────────────────────────────────────────┘",
+            "┌────────────────────────────────────────────────────────────────────────┐",
+            "│                     █▀▀ █▀█ █▀█ █   █ █▄ █ █▄▀   █▀▀ █▀█               │",
+            "│                     █▀  █▀█ █▀▄ █▄▄ █ █ ▀█ █ █   █▄█ █▄█               │",
+            "│                           FARLINK GO MATRIX 3.5\"                       │",
+            "├────────────────────────────────────────────────────────────────────────┤",
+            f"│ ID: {claim_code:<14}  SERVER: {srv_str:<15}  MODE: {srv_mode:<18} │",
+            "├────────────────────────────────────────────────────────────────────────┤",
+            f"│ DOWNLOAD: {dl_mbps:6.2f} Mbps   │   UPLOAD: {ul_mbps:6.2f} Mbps   │   PING: {latency:4.1f} ms │",
+            "├────────────────────────────────────────────────────────────────────────┤",
+            f"│ NOTIFY: {notification[:60]:<62} │",
+            "└────────────────────────────────────────────────────────────────────────┘",
         ]
         return "\n".join(card)
 

@@ -1,8 +1,10 @@
 """Test runner orchestrating real speed tests, iPerf, and network diagnostics."""
 import time
 import uuid
-import requests
+import ssl
+import urllib.request
 from typing import Dict, Any, Optional
+from app.config import config
 from app.database import get_utc_now
 from app.iperf_runner import IperfRunner
 from app.network_diagnostics import NetworkDiagnostics
@@ -14,48 +16,67 @@ logger = setup_logger("test_runner")
 class TestRunner:
     def __init__(self):
         self.iperf = IperfRunner()
+        self._ssl_ctx = ssl._create_unverified_context()
 
     def _measure_http_bandwidth(self) -> Dict[str, Optional[float]]:
         """Perform real HTTP download and upload bandwidth measurement without dummy numbers."""
         dl_mbps = None
         ul_mbps = None
 
-        # 1. Measure Download (Stream 5MB test payload)
+        headers = {
+            "User-Agent": "FarLink-Agent/1.0 (Raspberry Pi; Linux)",
+            "Accept": "*/*",
+        }
+
+        # 1. Measure Download
         dl_targets = [
-            "https://speed.cloudflare.com/__down?bytes=5000000",
-            "https://httpbin.org/bytes/3000000",
+            f"{config.api_url}/tests/speedtest/download?size=2500000",
+            "https://speed.cloudflare.com/__down?bytes=2500000",
+            "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js",
+            "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js",
+            "https://code.jquery.com/jquery-3.7.1.min.js",
         ]
+
         for url in dl_targets:
             try:
+                req = urllib.request.Request(url, headers=headers)
                 t0 = time.time()
-                resp = requests.get(url, timeout=6, stream=True)
-                if resp.status_code == 200:
+                with urllib.request.urlopen(req, context=self._ssl_ctx, timeout=8) as resp:
                     total_bytes = 0
-                    for chunk in resp.iter_content(chunk_size=65536):
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
                         total_bytes += len(chunk)
-                    elapsed = time.time() - t0
-                    if elapsed > 0.05 and total_bytes > 0:
-                        dl_mbps = round((total_bytes * 8) / (elapsed * 1_000_000), 2)
-                        break
+                elapsed = time.time() - t0
+                if elapsed > 0.02 and total_bytes > 10000:
+                    dl_mbps = round((total_bytes * 8) / (elapsed * 1_000_000), 1)
+                    logger.info(f"Real download measured via {url}: {dl_mbps} Mbps ({total_bytes} bytes in {elapsed:.2f}s)")
+                    break
             except Exception as e:
-                logger.debug(f"Download measurement attempt failed on {url}: {e}")
+                logger.debug(f"Download attempt failed on {url}: {e}")
 
-        # 2. Measure Upload (POST 1MB test chunk)
+        # 2. Measure Upload
+        payload = b"0" * 500_000  # 500 KB test chunk
         ul_targets = [
+            f"{config.api_url}/tests/speedtest/upload",
             "https://speed.cloudflare.com/__up",
             "https://httpbin.org/post",
         ]
-        payload = b"0" * 1_000_000
+
         for url in ul_targets:
             try:
+                req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
                 t0 = time.time()
-                resp = requests.post(url, data=payload, timeout=6)
+                with urllib.request.urlopen(req, context=self._ssl_ctx, timeout=8) as resp:
+                    resp.read(512)
                 elapsed = time.time() - t0
-                if resp.status_code == 200 and elapsed > 0.05:
-                    ul_mbps = round((len(payload) * 8) / (elapsed * 1_000_000), 2)
+                if elapsed > 0.02:
+                    ul_mbps = round((len(payload) * 8) / (elapsed * 1_000_000), 1)
+                    logger.info(f"Real upload measured via {url}: {ul_mbps} Mbps ({len(payload)} bytes in {elapsed:.2f}s)")
                     break
             except Exception as e:
-                logger.debug(f"Upload measurement attempt failed on {url}: {e}")
+                logger.debug(f"Upload attempt failed on {url}: {e}")
 
         return {"download_mbps": dl_mbps, "upload_mbps": ul_mbps}
 

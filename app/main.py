@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import signal
+import threading
 from typing import Dict, Any, Optional
 from app.config import config
 from app.logger import setup_logger
@@ -387,6 +388,9 @@ class FarlinkAgent:
         # Initial dashboard render
         self._check_master_connectivity()
         self._render_dashboard(last_test=last_test)
+
+        # Trigger automatic initial test so download & upload appear on startup without needing button press
+        threading.Thread(target=self.on_start_button, daemon=True).start()
 
         sync_counter = 0
         connection_check_counter = 0

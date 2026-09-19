@@ -27,6 +27,9 @@ class HeartbeatWorker(threading.Thread):
         self._stop_event = threading.Event()
         self.last_test_at: Optional[str] = None
         self.config_version: int = 1
+        self.master_ip: Optional[str] = None
+        self.master_connected: Optional[bool] = None
+        self.master_latency_ms: Optional[float] = None
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -68,6 +71,9 @@ class HeartbeatWorker(threading.Thread):
             "last_test_at": self.last_test_at,
             "os_version": metrics["os_version"],
             "service_status": "RUNNING",
+            "master_ip": self.master_ip,
+            "master_connected": self.master_connected,
+            "master_latency_ms": self.master_latency_ms,
         }
 
         try:

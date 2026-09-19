@@ -77,6 +77,9 @@ class CLIDisplay:
         server_connected: bool = False,
         notification: Optional[str] = None,
         pending_sync_count: int = 0,
+        master_ip: Optional[str] = None,
+        master_connected: bool = False,
+        master_latency_ms: Optional[float] = None,
     ) -> None:
         term_cols, term_lines = shutil.get_terminal_size((80, 24))
 
@@ -93,6 +96,9 @@ class CLIDisplay:
                 server_connected=server_connected,
                 notification=notification,
                 pending_sync_count=pending_sync_count,
+                master_ip=master_ip,
+                master_connected=master_connected,
+                master_latency_ms=master_latency_ms,
             )
         else:
             cls._render_compact_35(
@@ -198,6 +204,9 @@ class CLIDisplay:
         server_connected: bool = False,
         notification: Optional[str] = None,
         pending_sync_count: int = 0,
+        master_ip: Optional[str] = None,
+        master_connected: bool = False,
+        master_latency_ms: Optional[float] = None,
     ) -> None:
         inner_w = 74
         m = cls._extract_metrics(health, db, last_test)
@@ -229,11 +238,23 @@ class CLIDisplay:
         for l in logo:
             lines.append(f"{C_CYAN}║{C_RESET} {_fit_line(l, inner_w)} {C_CYAN}║{C_RESET}")
         lines.append(f"{C_CYAN}╠{'═' * 76}╣{C_RESET}")
-
-        dev_row = f" {C_WHITE}{C_BOLD}FARLINK GO #{dev_code:<12}{C_RESET}  │   {srv_badge}   │   {C_CYAN}{m['now_time']}{C_RESET}"
+        d_type = (active_config.get("type") or "FarLink Go").upper()
+        d_mode = (active_config.get("mode") or "Standalone").upper()
+        dev_row = f" {C_WHITE}{C_BOLD}{d_type} [{d_mode}] #{dev_code:<8}{C_RESET} │   {srv_badge}   │   {C_CYAN}{m['now_time']}{C_RESET}"
         lines.append(f"{C_CYAN}║{C_RESET} {_fit_line(dev_row, inner_w)} {C_CYAN}║{C_RESET}")
         lines.append(f"{C_CYAN}║{C_RESET} {_fit_line(' ' + mode_desc, inner_w)} {C_CYAN}║{C_RESET}")
         lines.append(f"{C_CYAN}╠{'═' * 76}╣{C_RESET}")
+
+        if d_mode == "SLAVE":
+            m_ip = master_ip or active_config.get("master_ip") or m["gateway_ip"]
+            if master_connected:
+                lat_str = f"{master_latency_ms:.1f} ms" if master_latency_ms is not None else "OK"
+                m_stat = f"{C_GREEN}{C_BOLD}● CONNECTED ({m_ip}, {lat_str}){C_RESET}"
+            else:
+                m_stat = f"{C_YELLOW}○ CHECKING / DISCONNECTED ({m_ip}){C_RESET}"
+            m_row = f"   MASTER (FARLINK GO): {m_stat}  │  iPerf3: {C_GREEN}● LISTENING (5201){C_RESET}"
+            lines.append(f"{C_CYAN}║{C_RESET} {_fit_line(m_row, inner_w)} {C_CYAN}║{C_RESET}")
+            lines.append(f"{C_CYAN}╠{'═' * 76}╣{C_RESET}")
 
         h_speed = f" {C_WHITE}{C_BOLD}[SPEED & PERFORMANCE MEASUREMENTS]{C_RESET}                   {C_DIM}Last: {m['last_test_str']}{C_RESET}"
         lines.append(f"{C_CYAN}║{C_RESET} {_fit_line(h_speed, inner_w)} {C_CYAN}║{C_RESET}")

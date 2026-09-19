@@ -1,4 +1,5 @@
 """Main entry point for FarLink Agent."""
+import os
 import sys
 import time
 import signal
@@ -57,9 +58,45 @@ class FarlinkAgent:
             on_reset_press=self.on_reset_button,
         )
 
+        cfg = self.config_manager.active_config
+        self.device_type = cfg.get("type") or cfg.get("device_type") or config.device_type
+        self.device_mode = cfg.get("mode") or cfg.get("device_mode") or config.device_mode
+        self.master_ip: Optional[str] = cfg.get("master_ip") or os.getenv("FARLINK_MASTER_IP")
+        self.master_connected: bool = False
+        self.master_latency_ms: Optional[float] = None
+        if self.master_ip:
+            self.heartbeat_worker.master_ip = self.master_ip
+
+        self.iperf_server_proc = None
+        if self.device_type == "FarLink Edge" and self.device_mode == "Slave":
+            logger.info("FarLink Edge Slave mode detected. Starting background iPerf3 server...")
+            self.iperf_server_proc = self.test_runner.iperf.start_server_process()
+
         self.server_connected: bool = False
-        self.latest_notification: str = "Initializing FarLink Go Agent..."
+        self.latest_notification: str = f"Initializing {self.device_type} Agent ({self.device_mode})..."
         self.running = True
+
+    def _check_master_connectivity(self) -> None:
+        """Probe connectivity to FarLink Go Master when running in Slave mode."""
+        if self.device_mode != "Slave":
+            return
+
+        cfg_master = self.config_manager.active_config.get("master_ip") or os.getenv("FARLINK_MASTER_IP")
+        if cfg_master:
+            self.master_ip = cfg_master
+        elif not self.master_ip:
+            gw = NetworkDiagnostics.get_default_gateway()
+            if gw:
+                self.master_ip = gw
+
+        if self.master_ip:
+            diag = NetworkDiagnostics.ping_latency(self.master_ip)
+            lat = diag.get("latency_ms")
+            self.master_connected = bool(lat is not None and lat < 900)
+            self.master_latency_ms = lat
+            self.heartbeat_worker.master_ip = self.master_ip
+            self.heartbeat_worker.master_connected = self.master_connected
+            self.heartbeat_worker.master_latency_ms = lat
 
     def _apply_config_updates(self) -> None:
         """Apply active config updates to running workers."""
@@ -67,6 +104,33 @@ class FarlinkAgent:
         hb_interval = int(cfg.get("heartbeat_interval", config.heartbeat_interval))
         self.heartbeat_worker.set_interval(hb_interval)
         self.heartbeat_worker.config_version = self.config_manager.get_active_version()
+
+        # Update dynamic device type and mode from remote configuration
+        new_type = cfg.get("type") or cfg.get("device_type")
+        new_mode = cfg.get("mode") or cfg.get("device_mode")
+        if new_type:
+            self.device_type = new_type
+        if new_mode:
+            self.device_mode = new_mode
+
+        if "master_ip" in cfg:
+            self.master_ip = cfg.get("master_ip")
+            self.heartbeat_worker.master_ip = self.master_ip
+            self._check_master_connectivity()
+
+        # Manage iPerf3 server daemon if mode switched
+        if self.device_type == "FarLink Edge" and self.device_mode == "Slave":
+            if not self.iperf_server_proc:
+                logger.info("FarLink Edge Slave active: starting iPerf3 server daemon...")
+                self.iperf_server_proc = self.test_runner.iperf.start_server_process()
+        else:
+            if self.iperf_server_proc:
+                logger.info("Stopping iPerf3 server daemon (device is no longer Edge Slave)...")
+                try:
+                    self.iperf_server_proc.terminate()
+                except Exception:
+                    pass
+                self.iperf_server_proc = None
 
     def _sync_config_command(self, payload: Dict[str, Any]) -> bool:
         logger.info("SYNC_CONFIG command received from web")
@@ -105,17 +169,43 @@ class FarlinkAgent:
         def _delayed_stop():
             import time
             import os
+            import subprocess
+            import platform
             time.sleep(2.0)
             logger.info("Restarting agent process...")
             self.shutdown()
-            try:
-                import subprocess
-                subprocess.run(["sudo", "systemctl", "restart", "farlink-agent"], timeout=5)
-            except Exception:
-                pass
+            if platform.system() == "Linux":
+                try:
+                    cmd = ["systemctl", "restart", "farlink-agent"] if os.geteuid() == 0 else ["sudo", "-n", "systemctl", "restart", "farlink-agent"]
+                    subprocess.run(cmd, timeout=5)
+                except Exception:
+                    pass
             os._exit(0)
         import threading
         threading.Thread(target=_delayed_stop, daemon=True).start()
+        return True
+
+    def _reboot_device_command(self, payload: Dict[str, Any]) -> bool:
+        logger.info("REBOOT_DEVICE command received from web: scheduling system reboot")
+        self.latest_notification = "System reboot requested via Web. Rebooting now..."
+        self._render_dashboard()
+        def _delayed_reboot():
+            import time
+            import os
+            import subprocess
+            import platform
+            time.sleep(2.0)
+            logger.info("Executing system reboot...")
+            self.shutdown()
+            if platform.system() == "Linux":
+                try:
+                    cmd = ["reboot"] if os.geteuid() == 0 else ["sudo", "-n", "reboot"]
+                    subprocess.run(cmd, timeout=5)
+                except Exception:
+                    pass
+            os._exit(0)
+        import threading
+        threading.Thread(target=_delayed_reboot, daemon=True).start()
         return True
 
     def _register_commands(self) -> None:
@@ -124,6 +214,7 @@ class FarlinkAgent:
         self.command_worker.register_handler("SYNC_DATA", self._sync_data_command)
         self.command_worker.register_handler("UPLOAD_LOG", self._upload_log_command)
         self.command_worker.register_handler("RESTART_AGENT", self._restart_agent_command)
+        self.command_worker.register_handler("REBOOT_DEVICE", self._reboot_device_command)
 
     def _render_dashboard(self, last_test: Optional[Dict[str, Any]] = None, test_running: bool = False) -> None:
         """Render live Matrix 3.5 inch terminal dashboard in English."""
@@ -140,6 +231,9 @@ class FarlinkAgent:
                 server_connected=self.server_connected,
                 notification=self.latest_notification,
                 pending_sync_count=pending_count,
+                master_ip=self.master_ip,
+                master_connected=self.master_connected,
+                master_latency_ms=self.master_latency_ms,
             )
         except Exception as e:
             logger.debug(f"CLI display render error: {e}")
@@ -147,7 +241,11 @@ class FarlinkAgent:
     def on_start_button(self) -> None:
         logger.info("Start test triggered by physical button")
         self.latest_notification = "Running diagnostic speed test... Please wait."
-        self.lcd.display_status("Starting Test...", "Please wait")
+        self.lcd.update_dashboard(
+            device_code=self.identity.claim_code,
+            status_text="Running test...",
+            status_color="#38bdf8",
+        )
         self._render_dashboard(test_running=True)
 
         result = self.test_runner.run_speed_test()
@@ -168,13 +266,20 @@ class FarlinkAgent:
             dl_mbps=result["download_mbps"],
             ul_mbps=result["upload_mbps"],
             latency=result.get("latency_ms"),
+            jitter=result.get("jitter_ms"),
+            device_code=self.identity.claim_code,
+            status_text="Test complete",
         )
         self._render_dashboard(last_test=result, test_running=False)
 
     def on_reset_button(self) -> None:
         logger.info("Reset triggered by physical button")
         self.latest_notification = "Re-evaluating network diagnostics & connection..."
-        self.lcd.display_status("Device Resetting", "Re-init network")
+        self.lcd.update_dashboard(
+            device_code=self.identity.claim_code,
+            status_text="Resetting...",
+            status_color="#f59e0b",
+        )
         
         # Trigger network diagnostic and probe server
         diag = NetworkDiagnostics.run_full_diagnostics()
@@ -183,22 +288,42 @@ class FarlinkAgent:
         if self.server_connected:
             srv_msg = "Server: Connected"
             self.latest_notification = "Network re-checked: Internet & FarLink Cloud ONLINE."
+            status_text = "Online"
+            status_color = "#22c55e"
         else:
             srv_msg = "Server: Disconnected"
             self.latest_notification = "Network re-checked: Standalone offline mode active."
+            status_text = "Offline"
+            status_color = "#f59e0b"
 
-        net_msg = "Net: OK" if diag.get("internet_connected") else "Net: Offline"
-        self.lcd.display_status(f"Claim: {self.identity.claim_code}", f"{net_msg} | {srv_msg}")
+        self.lcd.update_dashboard(
+            device_code=self.identity.claim_code,
+            status_text=status_text,
+            status_color=status_color,
+        )
         self._render_dashboard()
 
     def run_test_command(self, payload: Dict[str, Any]) -> bool:
         server_ip = payload.get("server_ip")
+        self.lcd.update_dashboard(
+            device_code=self.identity.claim_code,
+            status_text="Running test...",
+            status_color="#38bdf8",
+        )
         res = self.test_runner.run_speed_test(server_ip=server_ip)
         self.sync_manager.enqueue_result(res)
         self.sync_manager.sync_pending()
         self.server_connected = self.api_client.is_connected
         self.heartbeat_worker.last_test_at = res["finished_at"]
         self.latest_notification = f"Remote test completed (DL: {res['download_mbps']} Mbps)."
+        self.lcd.show_test_result(
+            dl_mbps=res["download_mbps"],
+            ul_mbps=res["upload_mbps"],
+            latency=res.get("latency_ms"),
+            jitter=res.get("jitter_ms"),
+            device_code=self.identity.claim_code,
+            status_text="Test complete",
+        )
         self._render_dashboard(last_test=res)
         return True
 
@@ -215,9 +340,10 @@ class FarlinkAgent:
             self.latest_notification = "Server disconnected. Operating in offline standalone mode."
             logger.info("[OFFLINE] Operating in standalone offline mode. All metrics stored locally.")
 
-        self.lcd.display_status(
-            f"ID:{self.identity.claim_code[:12]}",
-            "ONLINE" if self.server_connected else "OFFLINE"
+        self.lcd.update_dashboard(
+            device_code=self.identity.claim_code,
+            status_text="Ready" if self.server_connected else "Offline",
+            status_color="#22c55e" if self.server_connected else "#f59e0b",
         )
 
         # Start workers
@@ -229,16 +355,24 @@ class FarlinkAgent:
             self._apply_config_updates()
 
         # Initial dashboard render
+        self._check_master_connectivity()
         self._render_dashboard()
 
         sync_counter = 0
         connection_check_counter = 0
+        master_check_counter = 0
 
         while self.running:
             try:
                 time.sleep(3)
                 sync_counter += 3
                 connection_check_counter += 3
+                master_check_counter += 3
+
+                # Periodically probe master reachability in Slave mode
+                if master_check_counter >= 6:
+                    self._check_master_connectivity()
+                    master_check_counter = 0
 
                 # Periodically probe server status
                 if connection_check_counter >= 15:
@@ -281,6 +415,12 @@ class FarlinkAgent:
         self.heartbeat_worker.stop()
         self.command_worker.stop()
         self.button_handler.cleanup()
+        if getattr(self, "iperf_server_proc", None):
+            try:
+                self.iperf_server_proc.terminate()
+                self.iperf_server_proc = None
+            except Exception:
+                pass
         logger.info("FarLink Agent shutdown complete.")
 
 

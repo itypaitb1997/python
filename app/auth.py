@@ -19,11 +19,14 @@ class AuthManager:
 
     def register_device(self, agent_version: str = "1.0.0") -> bool:
         """Register device and obtain or verify registration status."""
+        from app.config import config
         payload = {
             "device_uuid": self.identity.device_uuid,
             "claim_code": self.identity.claim_code,
             "mac_address": self.identity.mac_address,
             "agent_version": agent_version,
+            "type": config.device_type,
+            "mode": config.device_mode,
         }
         try:
             resp = self.api_client.post("devices/register", json=payload, max_retries=1)
@@ -38,6 +41,7 @@ class AuthManager:
                 logger.info(f"Device registered successfully. Status: {status}")
                 return True
             else:
+                self.api_client.is_connected = False
                 logger.warning(f"Registration API returned HTTP {resp.status_code}: {resp.text}")
                 return False
         except Exception as e:

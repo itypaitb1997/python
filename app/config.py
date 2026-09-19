@@ -39,6 +39,8 @@ class AppConfig:
     http_timeout: int = int(os.getenv("FARLINK_HTTP_TIMEOUT", str(DEFAULT_HTTP_TIMEOUT)))
     pin_start: int = int(os.getenv("FARLINK_PIN_START", str(DEFAULT_PIN_START)))
     pin_reset: int = int(os.getenv("FARLINK_PIN_RESET", str(DEFAULT_PIN_RESET)))
+    device_type: str = os.getenv("FARLINK_DEVICE_TYPE", "FarLink Go")
+    device_mode: str = os.getenv("FARLINK_DEVICE_MODE", "Standalone")
 
 
 config = AppConfig()

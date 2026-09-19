@@ -1,13 +1,13 @@
 [Unit]
-Description=FarLink Edge & Go Agent Service
-After=network-online.target
+Description=FarLink Edge & Go Agent Service (Raspberry Pi 5)
+After=network-online.target local-fs.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/farlink/python
-ExecStart=/usr/bin/python3 -m app.main
+ExecStart=/opt/farlink/python/venv/bin/python3 -m app.main
 Restart=always
 RestartSec=5s
 EnvironmentFile=-/etc/farlink/agent.env

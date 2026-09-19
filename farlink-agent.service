@@ -5,14 +5,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/opt/farlink/python
-ExecStart=/opt/farlink/python/venv/bin/python3 -m app.main
+User=farlink
+WorkingDirectory=/home/farlink/python
+ExecStart=/usr/bin/python3 -m app.main
 Restart=always
-RestartSec=5s
-EnvironmentFile=-/etc/farlink/agent.env
-StandardOutput=journal
+RestartSec=3s
+StandardInput=tty
+StandardOutput=tty
 StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
 
 [Install]
 WantedBy=multi-user.target

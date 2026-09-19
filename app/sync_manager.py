@@ -43,6 +43,7 @@ class SyncManager:
                 "latency_ms": result_dict.get("latency_ms"),
                 "jitter_ms": result_dict.get("jitter_ms"),
                 "packet_loss": result_dict.get("packet_loss"),
+                "rtc_time": result_dict.get("rtc_time") or now,
                 "result_json": json.dumps(result_dict),
                 "created_at": now,
             }

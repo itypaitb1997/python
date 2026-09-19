@@ -6,8 +6,41 @@ from datetime import datetime, timezone
 from typing import Generator, Optional
 
 
-def get_utc_now() -> str:
+import subprocess
+
+
+def get_rtc_now_str() -> str:
+    """Read hardware RTC timestamp (Raspberry Pi /dev/rtc0, sysfs, or hwclock)."""
+    # 1. Direct sysfs check for /sys/class/rtc/rtc0
+    try:
+        date_file = "/sys/class/rtc/rtc0/date"
+        time_file = "/sys/class/rtc/rtc0/time"
+        if os.path.exists(date_file) and os.path.exists(time_file):
+            with open(date_file, "r") as fd, open(time_file, "r") as ft:
+                d_str = fd.read().strip()
+                t_str = ft.read().strip()
+                if d_str and t_str:
+                    return f"{d_str}T{t_str}+00:00"
+    except Exception:
+        pass
+
+    # 2. Linux hwclock fallback
+    try:
+        res = subprocess.run(["hwclock", "-r", "-u"], capture_output=True, text=True, timeout=1)
+        if res.returncode == 0 and res.stdout.strip():
+            parts = res.stdout.strip().split()
+            if len(parts) >= 2:
+                return f"{parts[0]}T{parts[1]}"
+    except Exception:
+        pass
+
+    # 3. Standard UTC clock fallback
     return datetime.now(timezone.utc).isoformat()
+
+
+def get_utc_now() -> str:
+    """Return UTC ISO8601 timestamp backed by hardware RTC if present."""
+    return get_rtc_now_str()
 
 
 class Database:
@@ -22,8 +55,14 @@ class Database:
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
         conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL;")
-        conn.execute("PRAGMA busy_timeout = 30000;")
+        try:
+            conn.execute("PRAGMA journal_mode = WAL;")
+        except Exception:
+            pass
+        try:
+            conn.execute("PRAGMA busy_timeout = 30000;")
+        except Exception:
+            pass
         try:
             yield conn
             conn.commit()
@@ -68,6 +107,7 @@ class Database:
                     latency_ms REAL,
                     jitter_ms REAL,
                     packet_loss REAL,
+                    rtc_time TEXT,
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )
@@ -78,6 +118,8 @@ class Database:
             existing_cols = {row["name"] for row in cursor.fetchall()}
             if "device_id" not in existing_cols:
                 cursor.execute("ALTER TABLE test_results ADD COLUMN device_id TEXT")
+            if "rtc_time" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN rtc_time TEXT")
             if "download_mbps" not in existing_cols:
                 cursor.execute("ALTER TABLE test_results ADD COLUMN download_mbps REAL")
             if "upload_mbps" not in existing_cols:

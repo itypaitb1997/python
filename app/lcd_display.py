@@ -10,6 +10,7 @@ import os
 import sys
 from typing import Optional, Dict, Any, Tuple
 from app.logger import setup_logger
+from app.database import get_rtc_now_str
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -125,6 +126,7 @@ class LCDDisplay:
         status_text: str = "Test complete",
         status_color: str = "#22c55e",
         conn_type: str = "Ethernet",
+        rtc_time: Optional[str] = None,
     ) -> Any:
         """Render modern graphical FarLink dashboard with real data and no dummy fallbacks."""
         if not PILLOW_AVAILABLE:
@@ -206,9 +208,18 @@ class LCDDisplay:
         draw.text((388, 220), jitter_str, fill="#ffffff", font=f_small_val)
         draw.text((428, 224), "ms", fill="#94a3b8", font=f_unit)
 
-        # 6. Footer: Rack Icon + Device Code (Left), Status Badge (Right)
+        # 6. Footer: Rack Icon + Device Code (Left), RTC Time, Status Badge (Right)
         draw_rack_icon(14, 282, "#64748b")
-        draw.text((36, 280), device_code, fill="#64748b", font=f_footer)
+        footer_label = device_code
+        if rtc_time:
+            try:
+                t_part = rtc_time.replace("T", " ").split(".")[0].split("+")[0].strip()
+                if " " in t_part:
+                    t_part = t_part.split(" ")[1]
+                footer_label += f" • {t_part}"
+            except Exception:
+                pass
+        draw.text((36, 280), footer_label, fill="#64748b", font=f_footer)
         draw_status_badge(336, 282, status_color, status_text)
 
         return img
@@ -247,16 +258,12 @@ class LCDDisplay:
                     raw_bytes[idx + 1] = (val >> 8) & 0xFF
                     idx += 2
             else:
-                # 32-bit format (BGRA / XRGB) for standard HDMI / DRM display
-                bgra = target_img.convert("RGBA")
-                raw_bytes = bytearray()
-                for r, g, b, a in bgra.getdata():
-                    raw_bytes.append(b)
-                    raw_bytes.append(g)
-                    raw_bytes.append(r)
-                    raw_bytes.append(a)
+                # 32-bit format (BGRX) for standard HDMI / DRM display on Raspberry Pi
+                raw_bytes = target_img.convert("RGB").tobytes("raw", "BGRX")
 
-            with open(self.fb_path, "wb") as f:
+            mode = "r+b" if os.path.exists(self.fb_path) else "wb"
+            with open(self.fb_path, mode) as f:
+                f.seek(0)
                 f.write(raw_bytes)
         except Exception as e:
             logger.debug(f"Writing to framebuffer failed: {e}")
@@ -271,6 +278,7 @@ class LCDDisplay:
         status_text: Optional[str] = None,
         status_color: Optional[str] = None,
         conn_type: Optional[str] = None,
+        rtc_time: Optional[str] = None,
     ) -> None:
         """Update and redraw FarLink graphical dashboard."""
         if dl_mbps is not None or self.last_dl is None:
@@ -299,6 +307,7 @@ class LCDDisplay:
             status_text=self.status_text,
             status_color=self.status_color,
             conn_type=self.conn_type,
+            rtc_time=rtc_time or get_rtc_now_str(),
         )
         self.render_to_framebuffer(img)
 
@@ -311,6 +320,7 @@ class LCDDisplay:
         device_code: Optional[str] = None,
         status_text: str = "Test complete",
         conn_type: Optional[str] = None,
+        rtc_time: Optional[str] = None,
     ) -> None:
         """Display real test metrics on dashboard screen."""
         self.update_dashboard(
@@ -322,6 +332,7 @@ class LCDDisplay:
             status_text=status_text,
             status_color="#22c55e",
             conn_type=conn_type,
+            rtc_time=rtc_time,
         )
 
     def display_status(self, line1: str, line2: str = "") -> None:

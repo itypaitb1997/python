@@ -118,6 +118,7 @@ class TestRunner:
             "test_type": "iperf" if server_ip else "network_check",
             "started_at": started_at,
             "finished_at": finished_at,
+            "rtc_time": started_at,
             "duration_seconds": round(time.time() - start_ts, 2),
             "download_mbps": download_mbps,
             "upload_mbps": upload_mbps,

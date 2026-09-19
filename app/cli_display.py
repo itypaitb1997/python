@@ -6,13 +6,14 @@ Renders modern dark UI cards in terminal and console:
 - Footer: Device code with rack icon + Status badge with checkmark circle
 - Strictly uses real test/network data: Displays '-' when not measured or disconnected.
 """
+import os
 import sys
 import re
 import shutil
 from typing import Dict, Any, Optional
 from app.device_identity import DeviceIdentity
 from app.health_monitor import HealthMonitor
-from app.database import Database
+from app.database import Database, get_rtc_now_str
 from app.network_diagnostics import NetworkDiagnostics
 
 # ANSI Color Codes for Modern Dark Theme
@@ -98,6 +99,7 @@ class CLIDisplay:
             server_connected=server_connected,
             conn_type=m["conn_type"],
             conn_iface=m["conn_iface"],
+            rtc_time=m.get("rtc_time"),
         )
         cls._output_screen(output)
 
@@ -115,17 +117,20 @@ class CLIDisplay:
             ul_mbps = last_test.get("upload_mbps")
             inet_lat = last_test.get("latency_ms")
             jitter_val = last_test.get("jitter_ms")
+            rtc_val = last_test.get("rtc_time") or last_test.get("finished_at") or get_rtc_now_str()
         else:
             dl_mbps = None
             ul_mbps = None
             inet_lat = diag.get("internet_latency_ms")
             jitter_val = diag.get("jitter_ms")
+            rtc_val = get_rtc_now_str()
 
         return {
             "dl_mbps": dl_mbps,
             "ul_mbps": ul_mbps,
             "inet_lat": inet_lat,
             "jitter_val": jitter_val,
+            "rtc_time": rtc_val,
             "conn_type": conn.get("type", "Disconnected"),
             "conn_iface": conn.get("interface", "-"),
             "metrics": metrics,
@@ -147,6 +152,7 @@ class CLIDisplay:
         server_connected: bool = False,
         conn_type: str = "Ethernet",
         conn_iface: str = "eth0",
+        rtc_time: Optional[str] = None,
     ) -> str:
         cw = max(24, min(34, (term_cols - 8) // 2))
         horiz = "\u2500" * cw
@@ -201,8 +207,18 @@ class CLIDisplay:
         lines.append(bot)
         lines.append("")
 
-        # Footer: Server Rack Icon + Device Code (Left), Status Badge (Right)
-        f_left = f"  {C_GRAY}\u268c {device_code}{C_RESET}"
+        # Footer: Server Rack Icon + Device Code (Left), RTC Time, Status Badge (Right)
+        clean_rtc = ""
+        if rtc_time:
+            try:
+                t_part = rtc_time.replace("T", " ").split(".")[0].split("+")[0].strip()
+                if " " in t_part:
+                    t_part = t_part.split(" ")[1]
+                clean_rtc = f"  {C_DARK}[RTC {t_part}]{C_RESET}"
+            except Exception:
+                pass
+
+        f_left = f"  {C_GRAY}\u268c {device_code}{C_RESET}{clean_rtc}"
         f_right = f"{status_col}{status_icon} {status_text}{C_RESET}"
 
         total_w = cw * 2 + 6
@@ -221,8 +237,16 @@ class CLIDisplay:
 
     @staticmethod
     def _output_screen(text: str) -> None:
-        if sys.stdout.isatty():
+        try:
             sys.stdout.write("\033[H\033[2J" + text + "\n")
             sys.stdout.flush()
-        else:
+        except Exception:
             print(text, flush=True)
+
+        # On Raspberry Pi Lite OS without desktop, write directly to physical console screen /dev/tty1
+        if os.path.exists("/dev/tty1") and not sys.stdout.isatty():
+            try:
+                with open("/dev/tty1", "w", encoding="utf-8") as f:
+                    f.write("\033[H\033[2J" + text + "\n")
+            except Exception:
+                pass

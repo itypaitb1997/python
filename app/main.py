@@ -218,9 +218,55 @@ class FarlinkAgent:
         self.command_worker.register_handler("REBOOT_DEVICE", self._reboot_device_command)
 
     def _render_dashboard(self, last_test: Optional[Dict[str, Any]] = None, test_running: bool = False) -> None:
-        """Render live Matrix 3.5 inch terminal dashboard in English."""
+        """Render and continuously maintain GUI on LCD/Framebuffer and terminal."""
         try:
             pending_count = self.sync_manager.get_pending_count()
+            diag = NetworkDiagnostics.run_full_diagnostics()
+            conn = diag.get("connection_type") or NetworkDiagnostics.get_connection_type()
+
+            if last_test is None:
+                last_test = self.db.get_latest_test_result()
+
+            if last_test:
+                dl = last_test.get("download_mbps")
+                ul = last_test.get("upload_mbps")
+                lat = last_test.get("latency_ms")
+                jit = last_test.get("jitter_ms")
+                rtc_t = last_test.get("rtc_time") or last_test.get("finished_at")
+            else:
+                dl = None
+                ul = None
+                lat = diag.get("internet_latency_ms")
+                jit = diag.get("jitter_ms")
+                rtc_t = None
+
+            if test_running:
+                status_text = "Running test..."
+                status_color = "#38bdf8"
+            elif last_test:
+                status_text = "Test complete"
+                status_color = "#22c55e"
+            elif self.server_connected:
+                status_text = "Ready"
+                status_color = "#22c55e"
+            else:
+                status_text = "Offline"
+                status_color = "#f59e0b"
+
+            # 1. ALWAYS redraw and maintain the graphical GUI on LCD / Framebuffer
+            self.lcd.update_dashboard(
+                dl_mbps=dl,
+                ul_mbps=ul,
+                latency_ms=lat,
+                jitter_ms=jit,
+                device_code=self.identity.claim_code,
+                status_text=status_text,
+                status_color=status_color,
+                conn_type=conn.get("type", "Ethernet"),
+                rtc_time=rtc_t,
+            )
+
+            # 2. Render CLI (suppressing direct /dev/tty1 writes when graphical framebuffer is active)
             CLIDisplay.render(
                 identity=self.identity,
                 health=self.health,
@@ -235,9 +281,10 @@ class FarlinkAgent:
                 master_ip=self.master_ip,
                 master_connected=self.master_connected,
                 master_latency_ms=self.master_latency_ms,
+                suppress_console=self.lcd.is_hardware_available,
             )
         except Exception as e:
-            logger.debug(f"CLI display render error: {e}")
+            logger.debug(f"Display render error: {e}")
 
     def on_start_button(self) -> None:
         try:

@@ -63,6 +63,7 @@ class CLIDisplay:
         master_ip: Optional[str] = None,
         master_connected: bool = False,
         master_latency_ms: Optional[float] = None,
+        suppress_console: bool = False,
     ) -> None:
         term_cols, term_lines = shutil.get_terminal_size((80, 24))
         m = cls._extract_metrics(health, db, last_test)
@@ -101,7 +102,7 @@ class CLIDisplay:
             conn_iface=m["conn_iface"],
             rtc_time=m.get("rtc_time"),
         )
-        cls._output_screen(output)
+        cls._output_screen(output, suppress_console=suppress_console)
 
     @classmethod
     def _extract_metrics(cls, health: HealthMonitor, db: Database, last_test: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -236,14 +237,24 @@ class CLIDisplay:
         return "\n".join(lines)
 
     @staticmethod
-    def _output_screen(text: str) -> None:
+    def _output_screen(text: str, suppress_console: bool = False) -> None:
+        # When graphical framebuffer GUI is active on physical screen, do not overwrite it with text console
+        if suppress_console:
+            if sys.stdout.isatty():
+                try:
+                    sys.stdout.write("\033[H\033[2J" + text + "\n")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+            return
+
         try:
             sys.stdout.write("\033[H\033[2J" + text + "\n")
             sys.stdout.flush()
         except Exception:
             print(text, flush=True)
 
-        # On Raspberry Pi Lite OS without desktop, write directly to physical console screen /dev/tty1
+        # Fallback to /dev/tty1 only in headless mode when no graphical framebuffer exists
         if os.path.exists("/dev/tty1") and not sys.stdout.isatty():
             try:
                 with open("/dev/tty1", "w", encoding="utf-8") as f:

@@ -1,14 +1,14 @@
 """Modern Card Dashboard for FarLink Go matching target specification.
 
 Renders modern dark UI cards in terminal and console:
-- Header: Blue square logo 'F' + 'FARLINK GO'
+- Header: Blue square logo 'F' + 'FARLINK GO' + Connection Info (Ethernet / Wi-Fi)
 - 4 Cards: Download (Mbps), Upload (Mbps), Ping (ms), Jitter (ms)
 - Footer: Device code with rack icon + Status badge with checkmark circle
+- Strictly uses real test/network data: Displays '-' when not measured or disconnected.
 """
 import sys
 import re
 import shutil
-from datetime import datetime
 from typing import Dict, Any, Optional
 from app.device_identity import DeviceIdentity
 from app.health_monitor import HealthMonitor
@@ -65,7 +65,7 @@ class CLIDisplay:
     ) -> None:
         term_cols, term_lines = shutil.get_terminal_size((80, 24))
         m = cls._extract_metrics(health, db, last_test)
-        dev_code = identity.claim_code or "FLK-DXB-01"
+        dev_code = identity.claim_code or "FLK-GO-01"
 
         if test_running:
             status_text = "Running test..."
@@ -96,6 +96,8 @@ class CLIDisplay:
             term_cols=term_cols,
             notification=notification,
             server_connected=server_connected,
+            conn_type=m["conn_type"],
+            conn_iface=m["conn_iface"],
         )
         cls._output_screen(output)
 
@@ -103,59 +105,72 @@ class CLIDisplay:
     def _extract_metrics(cls, health: HealthMonitor, db: Database, last_test: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         metrics = health.get_metrics()
         diag = NetworkDiagnostics.run_full_diagnostics()
+        conn = diag.get("connection_type") or NetworkDiagnostics.get_connection_type()
 
         if last_test is None:
             last_test = db.get_latest_test_result()
 
         if last_test:
-            dl_mbps = float(last_test.get("download_mbps") or 0.0)
-            ul_mbps = float(last_test.get("upload_mbps") or 0.0)
-            inet_lat = float(last_test.get("latency_ms") or 0.0)
-            jitter_val = float(last_test.get("jitter_ms") or 1.5)
+            dl_mbps = last_test.get("download_mbps")
+            ul_mbps = last_test.get("upload_mbps")
+            inet_lat = last_test.get("latency_ms")
+            jitter_val = last_test.get("jitter_ms")
         else:
-            dl_mbps = 487.0
-            ul_mbps = 92.0
-            inet_lat = 18.0
-            jitter_val = 2.1
+            dl_mbps = None
+            ul_mbps = None
+            inet_lat = diag.get("internet_latency_ms")
+            jitter_val = diag.get("jitter_ms")
 
         return {
             "dl_mbps": dl_mbps,
             "ul_mbps": ul_mbps,
             "inet_lat": inet_lat,
             "jitter_val": jitter_val,
+            "conn_type": conn.get("type", "Disconnected"),
+            "conn_iface": conn.get("interface", "-"),
             "metrics": metrics,
         }
 
     @classmethod
     def build_dashboard(
         cls,
-        dl_mbps: float,
-        ul_mbps: float,
-        latency_ms: float,
-        jitter_ms: float,
-        device_code: str = "FLK-DXB-01",
+        dl_mbps: Optional[float] = None,
+        ul_mbps: Optional[float] = None,
+        latency_ms: Optional[float] = None,
+        jitter_ms: Optional[float] = None,
+        device_code: str = "FLK-GO-01",
         status_text: str = "Test complete",
         status_icon: str = "✔",
         status_col: str = C_GREEN,
         term_cols: int = 80,
         notification: Optional[str] = None,
         server_connected: bool = False,
+        conn_type: str = "Ethernet",
+        conn_iface: str = "eth0",
     ) -> str:
-        # Determine card width based on terminal size
         cw = max(24, min(34, (term_cols - 8) // 2))
         horiz = "\u2500" * cw
         top = f"  {C_BORDER}\u256d{horiz}\u256e{C_RESET}  {C_BORDER}\u256d{horiz}\u256e{C_RESET}"
         bot = f"  {C_BORDER}\u2570{horiz}\u256f{C_RESET}  {C_BORDER}\u2570{horiz}\u256f{C_RESET}"
 
-        dl_str = f"{dl_mbps:.0f}" if dl_mbps >= 10 else f"{dl_mbps:.1f}"
-        ul_str = f"{ul_mbps:.0f}" if ul_mbps >= 10 else f"{ul_mbps:.1f}"
-        ping_str = f"{latency_ms:.0f}" if latency_ms >= 10 else f"{latency_ms:.1f}"
-        jit_str = f"{jitter_ms:.1f}"
+        # Real values or '-' if not measured / disconnected
+        dl_str = f"{dl_mbps:.1f}" if (dl_mbps is not None and dl_mbps > 0) else "-"
+        ul_str = f"{ul_mbps:.1f}" if (ul_mbps is not None and ul_mbps > 0) else "-"
+        ping_str = f"{latency_ms:.0f}" if (latency_ms is not None and latency_ms > 0) else "-"
+        jit_str = f"{jitter_ms:.1f}" if (jitter_ms is not None and jitter_ms > 0) else "-"
+
+        # Connection badge
+        if conn_type == "Ethernet":
+            conn_badge = f"{C_GREEN}[ Ethernet: {conn_iface} ]{C_RESET}"
+        elif conn_type == "Wi-Fi":
+            conn_badge = f"{C_CYAN}[ Wi-Fi: {conn_iface} ]{C_RESET}"
+        else:
+            conn_badge = f"{C_YELLOW}[ Disconnected ]{C_RESET}"
 
         lines = []
         lines.append("")
-        # Header: Blue square 'F' + 'FARLINK GO'
-        lines.append(f"  {C_BLUE_BG} F {C_RESET}  {C_WHITE}{C_BOLD}FARLINK GO{C_RESET}")
+        # Header: Blue square 'F' + 'FARLINK GO' + Connection type info
+        lines.append(f"  {C_BLUE_BG} F {C_RESET}  {C_WHITE}{C_BOLD}FARLINK GO{C_RESET}   {conn_badge}")
         lines.append("")
 
         # Row 1: Download & Upload Cards
@@ -194,7 +209,7 @@ class CLIDisplay:
         space_len = max(4, total_w - _vlen(f_left) - _vlen(f_right))
         lines.append(f"{f_left}{' ' * space_len}{f_right}")
 
-        # Notification or actions row if present
+        # Notification or action message
         if notification:
             notif_clean = notification[:total_w - 4]
             lines.append(f"  {C_DARK}{notif_clean}{C_RESET}")

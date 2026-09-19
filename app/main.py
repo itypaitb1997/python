@@ -241,10 +241,12 @@ class FarlinkAgent:
     def on_start_button(self) -> None:
         logger.info("Start test triggered by physical button")
         self.latest_notification = "Running diagnostic speed test... Please wait."
+        conn = NetworkDiagnostics.get_connection_type()
         self.lcd.update_dashboard(
             device_code=self.identity.claim_code,
             status_text="Running test...",
             status_color="#38bdf8",
+            conn_type=conn.get("type", "Ethernet"),
         )
         self._render_dashboard(test_running=True)
 
@@ -256,29 +258,34 @@ class FarlinkAgent:
         self.server_connected = self.api_client.is_connected
         pending_cnt = self.sync_manager.get_pending_count()
 
+        dl_val = result.get('download_mbps')
+        dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
         if self.server_connected:
-            self.latest_notification = f"Test finished (DL: {result['download_mbps']} Mbps). Synced with cloud."
+            self.latest_notification = f"Test finished ({dl_text}). Synced with cloud."
         else:
-            self.latest_notification = f"Test finished (DL: {result['download_mbps']} Mbps). Saved locally ({pending_cnt} queued)."
+            self.latest_notification = f"Test finished ({dl_text}). Saved locally ({pending_cnt} queued)."
 
         self.heartbeat_worker.last_test_at = result["finished_at"]
         self.lcd.show_test_result(
-            dl_mbps=result["download_mbps"],
-            ul_mbps=result["upload_mbps"],
+            dl_mbps=result.get("download_mbps"),
+            ul_mbps=result.get("upload_mbps"),
             latency=result.get("latency_ms"),
             jitter=result.get("jitter_ms"),
             device_code=self.identity.claim_code,
             status_text="Test complete",
+            conn_type=conn.get("type", "Ethernet"),
         )
         self._render_dashboard(last_test=result, test_running=False)
 
     def on_reset_button(self) -> None:
         logger.info("Reset triggered by physical button")
         self.latest_notification = "Re-evaluating network diagnostics & connection..."
+        conn = NetworkDiagnostics.get_connection_type()
         self.lcd.update_dashboard(
             device_code=self.identity.claim_code,
             status_text="Resetting...",
             status_color="#f59e0b",
+            conn_type=conn.get("type", "Ethernet"),
         )
         
         # Trigger network diagnostic and probe server
@@ -297,32 +304,40 @@ class FarlinkAgent:
             status_color = "#f59e0b"
 
         self.lcd.update_dashboard(
+            latency_ms=diag.get("internet_latency_ms"),
+            jitter_ms=diag.get("jitter_ms"),
             device_code=self.identity.claim_code,
             status_text=status_text,
             status_color=status_color,
+            conn_type=diag.get("connection_type", {}).get("type", "Ethernet"),
         )
         self._render_dashboard()
 
     def run_test_command(self, payload: Dict[str, Any]) -> bool:
         server_ip = payload.get("server_ip")
+        conn = NetworkDiagnostics.get_connection_type()
         self.lcd.update_dashboard(
             device_code=self.identity.claim_code,
             status_text="Running test...",
             status_color="#38bdf8",
+            conn_type=conn.get("type", "Ethernet"),
         )
         res = self.test_runner.run_speed_test(server_ip=server_ip)
         self.sync_manager.enqueue_result(res)
         self.sync_manager.sync_pending()
         self.server_connected = self.api_client.is_connected
         self.heartbeat_worker.last_test_at = res["finished_at"]
-        self.latest_notification = f"Remote test completed (DL: {res['download_mbps']} Mbps)."
+        dl_val = res.get('download_mbps')
+        dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+        self.latest_notification = f"Remote test completed ({dl_text})."
         self.lcd.show_test_result(
-            dl_mbps=res["download_mbps"],
-            ul_mbps=res["upload_mbps"],
+            dl_mbps=res.get("download_mbps"),
+            ul_mbps=res.get("upload_mbps"),
             latency=res.get("latency_ms"),
             jitter=res.get("jitter_ms"),
             device_code=self.identity.claim_code,
             status_text="Test complete",
+            conn_type=conn.get("type", "Ethernet"),
         )
         self._render_dashboard(last_test=res)
         return True
@@ -340,10 +355,25 @@ class FarlinkAgent:
             self.latest_notification = "Server disconnected. Operating in offline standalone mode."
             logger.info("[OFFLINE] Operating in standalone offline mode. All metrics stored locally.")
 
+        # Real initial network diagnostics and connection detection
+        diag = NetworkDiagnostics.run_full_diagnostics()
+        conn = diag.get("connection_type") or NetworkDiagnostics.get_connection_type()
+        last_test = self.db.get_latest_test_result()
+
+        dl_mbps = last_test.get("download_mbps") if last_test else None
+        ul_mbps = last_test.get("upload_mbps") if last_test else None
+        lat = last_test.get("latency_ms") if last_test else diag.get("internet_latency_ms")
+        jit = last_test.get("jitter_ms") if last_test else diag.get("jitter_ms")
+
         self.lcd.update_dashboard(
+            dl_mbps=dl_mbps,
+            ul_mbps=ul_mbps,
+            latency_ms=lat,
+            jitter_ms=jit,
             device_code=self.identity.claim_code,
             status_text="Ready" if self.server_connected else "Offline",
             status_color="#22c55e" if self.server_connected else "#f59e0b",
+            conn_type=conn.get("type", "Ethernet"),
         )
 
         # Start workers
@@ -356,7 +386,7 @@ class FarlinkAgent:
 
         # Initial dashboard render
         self._check_master_connectivity()
-        self._render_dashboard()
+        self._render_dashboard(last_test=last_test)
 
         sync_counter = 0
         connection_check_counter = 0

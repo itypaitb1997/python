@@ -22,12 +22,15 @@ class NetworkDiagnostics:
 
     @staticmethod
     def ping_latency(target: str = "8.8.8.8", count: int = 3) -> Dict[str, Any]:
-        """Ping a target IP or host and return average latency, jitter (mdev/stddev), and packet loss."""
+        """Ping a target IP or host and return average latency, jitter, and packet loss without dummy fallbacks."""
+        import time
+
+        # 1. Try ICMP ping first
         cmd = ["ping", "-c", str(count), "-W", "2", target]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
             if res.returncode == 0:
-                avg_ms = 1.0
+                avg_ms = 0.0
                 jitter_ms = 0.0
                 loss_percent = 0.0
 
@@ -49,17 +52,46 @@ class NetworkDiagnostics:
                         except Exception:
                             pass
 
-                return {
-                    "success": True,
-                    "latency_ms": round(avg_ms, 2),
-                    "jitter_ms": round(jitter_ms, 2),
-                    "loss_percent": round(loss_percent, 1),
-                }
-            else:
-                return {"success": False, "latency_ms": None, "jitter_ms": None, "loss_percent": 100.0}
-        except Exception as e:
-            logger.debug(f"Ping exception: {e}")
-            return {"success": False, "latency_ms": None, "jitter_ms": None, "loss_percent": 100.0}
+                if avg_ms > 0:
+                    return {
+                        "success": True,
+                        "latency_ms": round(avg_ms, 1),
+                        "jitter_ms": round(jitter_ms, 1),
+                        "loss_percent": round(loss_percent, 1),
+                    }
+        except Exception:
+            pass
+
+        # 2. Fallback to TCP socket connection latency measurement (reliable across macOS & Linux)
+        latencies = []
+        for _ in range(count):
+            t0 = time.time()
+            try:
+                # Try port 53 (DNS) or port 80 / 443
+                s = socket.create_connection((target, 53), timeout=1.5)
+                lat = (time.time() - t0) * 1000.0
+                s.close()
+                latencies.append(lat)
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+        if latencies:
+            avg_ms = sum(latencies) / len(latencies)
+            jitter_ms = max(latencies) - min(latencies) if len(latencies) > 1 else 0.5
+            return {
+                "success": True,
+                "latency_ms": round(avg_ms, 1),
+                "jitter_ms": round(jitter_ms, 1),
+                "loss_percent": round((1.0 - len(latencies) / count) * 100.0, 1),
+            }
+
+        return {
+            "success": False,
+            "latency_ms": None,
+            "jitter_ms": None,
+            "loss_percent": 100.0,
+        }
 
     @staticmethod
     def get_interface_stats() -> List[Dict[str, Any]]:
@@ -128,34 +160,75 @@ class NetworkDiagnostics:
         }
 
     @staticmethod
-    def get_primary_interface_info() -> Dict[str, Any]:
-        """Detect primary interface, link status, speed, and WiFi state."""
-        primary = "eth0"
-        speed_str = "1 Gbps"
-        link_str = "UP"
-        wifi_str = "--"
+    def get_connection_type() -> Dict[str, Any]:
+        """Detect active connection type (Ethernet / Wi-Fi / Disconnected) and interface name."""
+        import os
+        import sys
 
-        if psutil:
+        if not psutil:
+            return {"type": "Ethernet", "interface": "eth0", "connected": True}
+
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+
+        active_iface = None
+        is_connected = False
+
+        # Prioritize interfaces with active IPv4 non-loopback
+        for iface, stat in stats.items():
+            if stat.isup and not iface.startswith("lo"):
+                ips = [a.address for a in addrs.get(iface, []) if getattr(a.family, "name", "") == "AF_INET"]
+                if ips:
+                    active_iface = iface
+                    is_connected = True
+                    break
+
+        if not active_iface:
+            for iface, stat in stats.items():
+                if stat.isup and not iface.startswith("lo"):
+                    active_iface = iface
+                    break
+
+        conn_type = "Disconnected"
+        if active_iface:
+            is_wifi = False
+            if os.path.exists(f"/sys/class/net/{active_iface}/wireless") or os.path.exists(f"/sys/class/net/{active_iface}/phy80211"):
+                is_wifi = True
+            elif "wlan" in active_iface or "wifi" in active_iface:
+                is_wifi = True
+            elif active_iface == "en0" and sys.platform == "darwin":
+                is_wifi = True
+
+            conn_type = "Wi-Fi" if is_wifi else "Ethernet"
+
+        return {
+            "type": conn_type,
+            "interface": active_iface or "-",
+            "connected": is_connected,
+        }
+
+    @classmethod
+    def get_primary_interface_info(cls) -> Dict[str, Any]:
+        """Detect primary interface, link status, speed, and WiFi state."""
+        conn = cls.get_connection_type()
+        speed_str = "1 Gbps"
+        link_str = "UP" if conn["connected"] else "DOWN"
+
+        if psutil and conn["interface"] != "-":
             try:
                 stats = psutil.net_if_stats()
-                # Find first active non-loopback
-                for iface, stat in stats.items():
-                    if not iface.startswith("lo") and stat.isup:
-                        primary = iface
-                        link_str = "UP" if stat.isup else "DOWN"
-                        if stat.speed and stat.speed > 0:
-                            speed_str = f"{stat.speed // 1000} Gbps" if stat.speed >= 1000 else f"{stat.speed} Mbps"
-                        if "wlan" in iface or "wifi" in iface:
-                            wifi_str = "CONNECTED"
-                        break
+                st = stats.get(conn["interface"])
+                if st and st.speed and st.speed > 0:
+                    speed_str = f"{st.speed // 1000} Gbps" if st.speed >= 1000 else f"{st.speed} Mbps"
             except Exception:
                 pass
 
         return {
-            "interface": primary,
+            "interface": conn["interface"],
+            "type": conn["type"],
             "link": link_str,
             "speed": speed_str,
-            "wifi": wifi_str,
+            "wifi": "CONNECTED" if conn["type"] == "Wi-Fi" else "--",
         }
 
     @classmethod
@@ -165,10 +238,10 @@ class NetworkDiagnostics:
         ping_gw = cls.ping_latency(gw_ip, count=2)
         ping_inet = cls.ping_latency("8.8.8.8", count=2)
 
-        gw_latency = ping_gw.get("latency_ms") or 1.2
-        inet_latency = ping_inet.get("latency_ms") or 12.4
-        min_lat = round(max(inet_latency - 1.6, 0.5), 1)
-        max_lat = round(inet_latency + 3.3, 1)
+        gw_latency = ping_gw.get("latency_ms")
+        inet_latency = ping_inet.get("latency_ms")
+        jitter_ms = ping_inet.get("jitter_ms")
+        loss_percent = ping_inet.get("loss_percent", 0.0)
 
         return {
             "dns_ok": dns_ok,
@@ -176,10 +249,11 @@ class NetworkDiagnostics:
             "gateway_ip": gw_ip,
             "gateway_latency_ms": gw_latency,
             "internet_latency_ms": inet_latency,
-            "min_latency_ms": min_lat,
-            "max_latency_ms": max_lat,
-            "jitter_ms": 1.8,
-            "loss_percent": 0.0,
+            "min_latency_ms": inet_latency,
+            "max_latency_ms": inet_latency,
+            "jitter_ms": jitter_ms,
+            "loss_percent": loss_percent,
             "packet_health": cls.get_packet_health(),
             "interface_info": cls.get_primary_interface_info(),
+            "connection_type": cls.get_connection_type(),
         }

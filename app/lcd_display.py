@@ -37,22 +37,23 @@ class LCDDisplay:
         self.fb_height = self.SPEC_HEIGHT
         self.fb_bpp = 16
 
-        # Cached display state
-        self.last_dl: float = 0.0
-        self.last_ul: float = 0.0
-        self.last_ping: float = 0.0
-        self.last_jitter: float = 0.0
+        # Cached display state (None means no test data yet, displays '-')
+        self.last_dl: Optional[float] = None
+        self.last_ul: Optional[float] = None
+        self.last_ping: Optional[float] = None
+        self.last_jitter: Optional[float] = None
+        self.conn_type: str = "Ethernet"
         self.device_code: str = "FLK-GO-01"
         self.status_text: str = "Ready"
         self.status_color: str = "#22c55e"
 
         self._init_hardware()
-        # Draw initial screen
+        # Draw initial screen with dashes
         self.update_dashboard(
-            dl_mbps=0.0,
-            ul_mbps=0.0,
-            latency_ms=0.0,
-            jitter_ms=0.0,
+            dl_mbps=None,
+            ul_mbps=None,
+            latency_ms=None,
+            jitter_ms=None,
             device_code=self.device_code,
             status_text="Ready",
             status_color="#22c55e",
@@ -116,15 +117,16 @@ class LCDDisplay:
 
     def render_dashboard_image(
         self,
-        dl_mbps: float,
-        ul_mbps: float,
-        latency_ms: float,
-        jitter_ms: float,
+        dl_mbps: Optional[float] = None,
+        ul_mbps: Optional[float] = None,
+        latency_ms: Optional[float] = None,
+        jitter_ms: Optional[float] = None,
         device_code: str = "FLK-GO-01",
         status_text: str = "Test complete",
         status_color: str = "#22c55e",
+        conn_type: str = "Ethernet",
     ) -> Any:
-        """Render modern graphical FarLink dashboard matching target specifications."""
+        """Render modern graphical FarLink dashboard with real data and no dummy fallbacks."""
         if not PILLOW_AVAILABLE:
             return None
 
@@ -134,16 +136,20 @@ class LCDDisplay:
 
         f_header = self._get_font(18, bold=True)
         f_logo = self._get_font(17, bold=True)
-        f_label = self._get_font(15, bold=False)
-        f_metric = self._get_font(54, bold=True)
+        f_label = self._get_font(14, bold=False)
+        f_metric = self._get_font(50, bold=True)
         f_unit = self._get_font(14, bold=False)
-        f_small_val = self._get_font(24, bold=True)
+        f_small_val = self._get_font(22, bold=True)
         f_footer = self._get_font(14, bold=False)
 
-        # 1. Header: Blue icon 'F' and Title 'FARLINK GO'
+        # 1. Header: Blue icon 'F' + Title 'FARLINK GO' + Connection Info (Ethernet / Wi-Fi)
         draw.rounded_rectangle([(14, 14), (44, 44)], radius=8, fill="#2b72ee")
         draw.text((23, 19), "F", fill="#ffffff", font=f_logo)
         draw.text((58, 20), "FARLINK GO", fill="#ffffff", font=f_header)
+
+        # Connection type badge in header
+        conn_str = f"• {conn_type}"
+        draw.text((200, 22), conn_str, fill="#94a3b8", font=f_label)
 
         # Helper vector drawer functions
         def draw_down_arrow(x: int, y: int, color: str = "#38bdf8"):
@@ -151,8 +157,8 @@ class LCDDisplay:
             draw.polygon([(x + 1, y + 8), (x + 7, y + 8), (x + 4, y + 13)], fill=color)
 
         def draw_up_arrow(x: int, y: int, color: str = "#c084fc"):
-            draw.line([(x + 4, y + 3), (x + 4, y + 13)], fill=color, width=2)
-            draw.polygon([(x + 1, y + 5), (x + 7, y + 5), (x + 4, y)], fill=color)
+            draw.line([(x + 4, y), (x + 4, y + 11)], fill=color, width=2)
+            draw.polygon([(x + 1, y + 3), (x + 7, y + 3), (x + 4, y - 2)], fill=color)
 
         def draw_rack_icon(x: int, y: int, color: str = "#64748b"):
             draw.rounded_rectangle([(x, y), (x + 15, y + 6)], radius=2, outline=color, width=1)
@@ -167,7 +173,7 @@ class LCDDisplay:
             draw.text((x + 20, y - 2), text, fill=color, font=f_footer)
 
         # 2. Card 1: Download
-        dl_str = f"{dl_mbps:.0f}" if dl_mbps >= 10 else f"{dl_mbps:.1f}"
+        dl_str = f"{dl_mbps:.1f}" if (dl_mbps is not None and dl_mbps > 0) else "-"
         c1 = [(12, 54), (234, 194)]
         draw.rounded_rectangle(c1, radius=16, fill="#15161c", outline="#1f222b", width=1)
         draw_down_arrow(26, 70, "#38bdf8")
@@ -176,7 +182,7 @@ class LCDDisplay:
         draw.text((26, 156), "Mbps", fill="#64748b", font=f_unit)
 
         # 3. Card 2: Upload
-        ul_str = f"{ul_mbps:.0f}" if ul_mbps >= 10 else f"{ul_mbps:.1f}"
+        ul_str = f"{ul_mbps:.1f}" if (ul_mbps is not None and ul_mbps > 0) else "-"
         c2 = [(246, 54), (468, 194)]
         draw.rounded_rectangle(c2, radius=16, fill="#15161c", outline="#1f222b", width=1)
         draw_up_arrow(260, 70, "#c084fc")
@@ -185,19 +191,19 @@ class LCDDisplay:
         draw.text((260, 156), "Mbps", fill="#64748b", font=f_unit)
 
         # 4. Card 3: Ping
-        ping_str = f"{latency_ms:.0f}" if latency_ms >= 10 else f"{latency_ms:.1f}"
+        ping_str = f"{latency_ms:.0f}" if (latency_ms is not None and latency_ms > 0) else "-"
         c3 = [(12, 204), (234, 266)]
         draw.rounded_rectangle(c3, radius=16, fill="#15161c", outline="#1f222b", width=1)
         draw.text((26, 224), "Ping", fill="#94a3b8", font=f_label)
-        draw.text((160, 219), ping_str, fill="#ffffff", font=f_small_val)
+        draw.text((160, 220), ping_str, fill="#ffffff", font=f_small_val)
         draw.text((196, 224), "ms", fill="#94a3b8", font=f_unit)
 
         # 5. Card 4: Jitter
-        jitter_str = f"{jitter_ms:.1f}"
+        jitter_str = f"{jitter_ms:.1f}" if (jitter_ms is not None and jitter_ms > 0) else "-"
         c4 = [(246, 204), (468, 266)]
         draw.rounded_rectangle(c4, radius=16, fill="#15161c", outline="#1f222b", width=1)
         draw.text((260, 224), "Jitter", fill="#94a3b8", font=f_label)
-        draw.text((388, 219), jitter_str, fill="#ffffff", font=f_small_val)
+        draw.text((388, 220), jitter_str, fill="#ffffff", font=f_small_val)
         draw.text((428, 224), "ms", fill="#94a3b8", font=f_unit)
 
         # 6. Footer: Rack Icon + Device Code (Left), Status Badge (Right)
@@ -257,19 +263,26 @@ class LCDDisplay:
 
     def update_dashboard(
         self,
-        dl_mbps: float = 0.0,
-        ul_mbps: float = 0.0,
-        latency_ms: float = 0.0,
-        jitter_ms: float = 0.0,
+        dl_mbps: Optional[float] = None,
+        ul_mbps: Optional[float] = None,
+        latency_ms: Optional[float] = None,
+        jitter_ms: Optional[float] = None,
         device_code: Optional[str] = None,
         status_text: Optional[str] = None,
         status_color: Optional[str] = None,
+        conn_type: Optional[str] = None,
     ) -> None:
         """Update and redraw FarLink graphical dashboard."""
-        self.last_dl = dl_mbps
-        self.last_ul = ul_mbps
-        self.last_ping = latency_ms
-        self.last_jitter = jitter_ms
+        if dl_mbps is not None or self.last_dl is None:
+            self.last_dl = dl_mbps
+        if ul_mbps is not None or self.last_ul is None:
+            self.last_ul = ul_mbps
+        if latency_ms is not None or self.last_ping is None:
+            self.last_ping = latency_ms
+        if jitter_ms is not None or self.last_jitter is None:
+            self.last_jitter = jitter_ms
+        if conn_type:
+            self.conn_type = conn_type
         if device_code:
             self.device_code = device_code
         if status_text:
@@ -285,38 +298,37 @@ class LCDDisplay:
             device_code=self.device_code,
             status_text=self.status_text,
             status_color=self.status_color,
+            conn_type=self.conn_type,
         )
         self.render_to_framebuffer(img)
 
     def show_test_result(
         self,
-        dl_mbps: float,
-        ul_mbps: float,
+        dl_mbps: Optional[float],
+        ul_mbps: Optional[float],
         latency: Optional[float] = None,
         jitter: Optional[float] = None,
         device_code: Optional[str] = None,
         status_text: str = "Test complete",
+        conn_type: Optional[str] = None,
     ) -> None:
-        """Display test metrics on dashboard screen."""
+        """Display real test metrics on dashboard screen."""
         self.update_dashboard(
             dl_mbps=dl_mbps,
             ul_mbps=ul_mbps,
-            latency_ms=latency if latency is not None else 0.0,
-            jitter_ms=jitter if jitter is not None else 1.5,
+            latency_ms=latency,
+            jitter_ms=jitter,
             device_code=device_code or self.device_code,
             status_text=status_text,
             status_color="#22c55e",
+            conn_type=conn_type,
         )
 
     def display_status(self, line1: str, line2: str = "") -> None:
         """Update status line while retaining metrics."""
         msg = f"{line1} {line2}".strip()
-        color = "#22c55e" if "OK" in msg or "Online" in msg or "complete" in msg.lower() else "#38bdf8"
+        color = "#22c55e" if "OK" in msg or "Online" in msg or "complete" in msg.lower() or "ready" in msg.lower() else "#38bdf8"
         self.update_dashboard(
-            dl_mbps=self.last_dl,
-            ul_mbps=self.last_ul,
-            latency_ms=self.last_ping,
-            jitter_ms=self.last_jitter,
             status_text=line1[:20],
             status_color=color,
         )

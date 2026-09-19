@@ -163,6 +163,33 @@ class TestFarlinkAgent(unittest.TestCase):
         self.assertEqual(synced, 0)
         self.assertGreaterEqual(sync_mgr.get_pending_count(), 2)
 
+    def test_enqueue_result_schema_adaptive(self):
+        """Verify enqueue_result handles schema differences gracefully without crashing."""
+        offline_api = ApiClient("http://127.0.0.1:59999/api", timeout=1)
+        ident = DeviceIdentity(self.db)
+        sync_mgr = SyncManager(self.db, offline_api, identity=ident)
+
+        res = {
+            "id": "test-adaptive-1",
+            "test_type": "network_check",
+            "download_mbps": 55.4,
+            "upload_mbps": 22.1,
+            "latency_ms": 14.2,
+            "jitter_ms": 1.8,
+            "packet_loss": 0.0,
+        }
+        res_id = sync_mgr.enqueue_result(res)
+        self.assertEqual(res_id, "test-adaptive-1")
+
+        # Verify saved in SQLite
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM test_results WHERE id = ?", ("test-adaptive-1",))
+            row = cursor.fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["download_mbps"], 55.4)
+            self.assertEqual(row["upload_mbps"], 22.1)
+
     def test_cli_matrix_display_rendering(self):
         from app.cli_display import CLIDisplay
         ident = DeviceIdentity(self.db)

@@ -240,43 +240,48 @@ class FarlinkAgent:
             logger.debug(f"CLI display render error: {e}")
 
     def on_start_button(self) -> None:
-        logger.info("Start test triggered by physical button")
-        self.latest_notification = "Running diagnostic speed test... Please wait."
-        conn = NetworkDiagnostics.get_connection_type()
-        self.lcd.update_dashboard(
-            device_code=self.identity.claim_code,
-            status_text="Running test...",
-            status_color="#38bdf8",
-            conn_type=conn.get("type", "Ethernet"),
-        )
-        self._render_dashboard(test_running=True)
+        try:
+            logger.info("Start test triggered")
+            self.latest_notification = "Running diagnostic speed test... Please wait."
+            conn = NetworkDiagnostics.get_connection_type()
+            self.lcd.update_dashboard(
+                device_code=self.identity.claim_code,
+                status_text="Running test...",
+                status_color="#38bdf8",
+                conn_type=conn.get("type", "Ethernet"),
+            )
+            self._render_dashboard(test_running=True)
 
-        result = self.test_runner.run_speed_test()
-        self.sync_manager.enqueue_result(result)
-        
-        # Try syncing if online
-        synced = self.sync_manager.sync_pending()
-        self.server_connected = self.api_client.is_connected
-        pending_cnt = self.sync_manager.get_pending_count()
+            result = self.test_runner.run_speed_test()
+            self.sync_manager.enqueue_result(result)
+            
+            # Try syncing if online
+            synced = self.sync_manager.sync_pending()
+            self.server_connected = self.api_client.is_connected
+            pending_cnt = self.sync_manager.get_pending_count()
 
-        dl_val = result.get('download_mbps')
-        dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
-        if self.server_connected:
-            self.latest_notification = f"Test finished ({dl_text}). Synced with cloud."
-        else:
-            self.latest_notification = f"Test finished ({dl_text}). Saved locally ({pending_cnt} queued)."
+            dl_val = result.get('download_mbps')
+            dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+            if self.server_connected:
+                self.latest_notification = f"Test finished ({dl_text}). Synced with cloud."
+            else:
+                self.latest_notification = f"Test finished ({dl_text}). Saved locally ({pending_cnt} queued)."
 
-        self.heartbeat_worker.last_test_at = result["finished_at"]
-        self.lcd.show_test_result(
-            dl_mbps=result.get("download_mbps"),
-            ul_mbps=result.get("upload_mbps"),
-            latency=result.get("latency_ms"),
-            jitter=result.get("jitter_ms"),
-            device_code=self.identity.claim_code,
-            status_text="Test complete",
-            conn_type=conn.get("type", "Ethernet"),
-        )
-        self._render_dashboard(last_test=result, test_running=False)
+            self.heartbeat_worker.last_test_at = result["finished_at"]
+            self.lcd.show_test_result(
+                dl_mbps=result.get("download_mbps"),
+                ul_mbps=result.get("upload_mbps"),
+                latency=result.get("latency_ms"),
+                jitter=result.get("jitter_ms"),
+                device_code=self.identity.claim_code,
+                status_text="Test complete",
+                conn_type=conn.get("type", "Ethernet"),
+            )
+            self._render_dashboard(last_test=result, test_running=False)
+        except Exception as e:
+            logger.error(f"Error executing speed test: {e}", exc_info=True)
+            self.latest_notification = f"Test warning: {e}"
+            self._render_dashboard(test_running=False)
 
     def on_reset_button(self) -> None:
         logger.info("Reset triggered by physical button")

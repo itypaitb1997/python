@@ -20,8 +20,10 @@ class Database:
 
     @contextmanager
     def get_connection(self) -> Generator[sqlite3.Connection, None, None]:
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
         try:
             yield conn
             conn.commit()
@@ -57,6 +59,7 @@ class Database:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS test_results (
                     id TEXT PRIMARY KEY,
+                    device_id TEXT,
                     test_type TEXT NOT NULL,
                     started_at TEXT NOT NULL,
                     finished_at TEXT NOT NULL,
@@ -69,6 +72,24 @@ class Database:
                     created_at TEXT NOT NULL
                 )
             """)
+
+            # Auto-migrate columns for test_results if database already existed
+            cursor.execute("PRAGMA table_info(test_results)")
+            existing_cols = {row["name"] for row in cursor.fetchall()}
+            if "device_id" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN device_id TEXT")
+            if "download_mbps" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN download_mbps REAL")
+            if "upload_mbps" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN upload_mbps REAL")
+            if "latency_ms" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN latency_ms REAL")
+            if "jitter_ms" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN jitter_ms REAL")
+            if "packet_loss" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN packet_loss REAL")
+            if "result_json" not in existing_cols:
+                cursor.execute("ALTER TABLE test_results ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'")
 
             # 4. sync_queue
             cursor.execute("""

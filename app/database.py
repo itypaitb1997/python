@@ -205,3 +205,66 @@ class Database:
                 return cursor.fetchone()[0]
         except Exception:
             return 0
+
+    def insert_agent_log(
+        self,
+        level: str,
+        module: str,
+        message: str,
+        error_code: Optional[str] = None
+    ) -> None:
+        """Insert a log record into the local SQLite agent_logs table."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO agent_logs (level, module, message, error_code, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (level, module, message, error_code, get_utc_now()),
+                )
+        except Exception:
+            pass
+
+    def get_agent_logs(self, limit: int = 100, since_id: int = 0) -> list:
+        """Fetch stored agent logs from SQLite."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if since_id > 0:
+                    cursor.execute(
+                        """
+                        SELECT id, level, module, message, error_code, created_at
+                        FROM agent_logs
+                        WHERE id > ?
+                        ORDER BY id ASC
+                        LIMIT ?
+                        """,
+                        (since_id, limit),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT id, level, module, message, error_code, created_at
+                        FROM agent_logs
+                        ORDER BY id DESC
+                        LIMIT ?
+                        """,
+                        (limit,),
+                    )
+                rows = cursor.fetchall()
+                return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_latest_agent_log_id(self) -> int:
+        """Get the highest ID in agent_logs."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT MAX(id) FROM agent_logs")
+                val = cursor.fetchone()[0]
+                return val or 0
+        except Exception:
+            return 0

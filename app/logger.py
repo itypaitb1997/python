@@ -23,7 +23,42 @@ class SensitiveFilter(logging.Filter):
         return True
 
 
-def setup_logger(name: str = "farlink", log_file: Optional[str] = None, level: int = logging.INFO) -> logging.Logger:
+class SQLiteLogHandler(logging.Handler):
+    """Logging handler that persists records into SQLite agent_logs table."""
+    def __init__(self, db_path: Optional[str] = None):
+        super().__init__()
+        self.db_path = db_path or os.getenv("FARLINK_DB_PATH", "farlink_agent.db")
+        self._db = None
+
+    def _get_db(self):
+        if self._db is None:
+            try:
+                from app.database import Database
+                self._db = Database(self.db_path)
+            except Exception:
+                pass
+        return self._db
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Prevent recursion if logging within database layer
+        if record.name in ("sqlite3", "app.database"):
+            return
+        try:
+            db = self._get_db()
+            if db:
+                msg = record.getMessage()
+                error_code = getattr(record, "error_code", None)
+                db.insert_agent_log(
+                    level=record.levelname,
+                    module=record.name,
+                    message=msg,
+                    error_code=str(error_code) if error_code else None
+                )
+        except Exception:
+            pass
+
+
+def setup_logger(name: str = "farlink", log_file: Optional[str] = None, level: int = logging.INFO, db_path: Optional[str] = None) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
@@ -50,5 +85,12 @@ def setup_logger(name: str = "farlink", log_file: Optional[str] = None, level: i
             except Exception as e:
                 logger.warning(f"Could not initialize file log handler at {log_file}: {e}")
 
+        # Attach SQLite handler so all logs are safely stored in SQLite agent_logs table
+        try:
+            sqlite_handler = SQLiteLogHandler(db_path=db_path)
+            sqlite_handler.addFilter(SensitiveFilter())
+            logger.addHandler(sqlite_handler)
+        except Exception:
+            pass
 
     return logger

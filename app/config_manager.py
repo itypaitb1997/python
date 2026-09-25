@@ -53,6 +53,11 @@ class ConfigManager:
         if not self.validate_config(new_config):
             return False
 
+        # Protect Raspberry Pi CM5 hardware GPIO pins from being modified remotely
+        new_config = dict(new_config)
+        for pin_key in ("pin_start", "pin_reset", "FARLINK_PIN_START", "FARLINK_PIN_RESET"):
+            new_config.pop(pin_key, None)
+
         version = int(new_config["version"])
         config_json = json.dumps(new_config)
 

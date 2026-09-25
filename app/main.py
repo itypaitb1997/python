@@ -76,6 +76,7 @@ class FarlinkAgent:
         self.server_connected: bool = False
         self.latest_notification: str = f"Initializing {self.device_type} Agent ({self.device_mode})..."
         self.running = True
+        self.last_synced_log_id: int = self.db.get_latest_agent_log_id()
 
     def _check_master_connectivity(self) -> None:
         """Probe connectivity to FarLink Go Master when running in Slave mode."""
@@ -146,24 +147,42 @@ class FarlinkAgent:
         return True
 
     def _upload_log_command(self, payload: Dict[str, Any]) -> bool:
-        logger.info("UPLOAD_LOG command received from web")
+        logger.info("UPLOAD_LOG command received from web: querying local SQLite agent_logs")
         try:
-            import os
-            log_lines = []
-            for path in ("agent.log", "farlink_agent.log", "app.log"):
-                if os.path.exists(path):
-                    with open(path, "r") as f:
-                        log_lines = f.readlines()[-50:]
-                    break
+            limit = int(payload.get("limit", 100)) if payload else 100
+            sqlite_logs = self.db.get_agent_logs(limit=limit)
             self.api_client.post("agent/logs", json={
                 "device_uuid": self.identity.device_uuid,
                 "level": "INFO",
-                "logs": "".join(log_lines),
+                "logs": sqlite_logs,
+                "source": "sqlite_agent_logs",
+                "count": len(sqlite_logs),
             })
+            if sqlite_logs:
+                self.last_synced_log_id = max(r["id"] for r in sqlite_logs)
+            logger.info(f"Successfully uploaded {len(sqlite_logs)} SQLite log records to web")
             return True
         except Exception as e:
-            logger.warning(f"Failed to upload log: {e}")
+            logger.warning(f"Failed to upload SQLite logs: {e}")
             return False
+
+    def _sync_sqlite_logs(self, limit: int = 50) -> None:
+        """Scheduled synchronization of new SQLite logs to web."""
+        try:
+            sqlite_logs = self.db.get_agent_logs(limit=limit, since_id=self.last_synced_log_id)
+            if sqlite_logs:
+                resp = self.api_client.post("agent/logs", json={
+                    "device_uuid": self.identity.device_uuid,
+                    "level": "INFO",
+                    "logs": sqlite_logs,
+                    "source": "sqlite_agent_logs",
+                    "count": len(sqlite_logs),
+                })
+                if resp and resp.status_code in (200, 201):
+                    self.last_synced_log_id = max(r["id"] for r in sqlite_logs)
+                    logger.debug(f"Synced {len(sqlite_logs)} SQLite log records to web")
+        except Exception as e:
+            logger.debug(f"Scheduled log sync deferred: {e}")
 
     def _restart_agent_command(self, payload: Dict[str, Any]) -> bool:
         logger.info("RESTART_AGENT command received: scheduling restart")
@@ -299,7 +318,21 @@ class FarlinkAgent:
             )
             self._render_dashboard(test_running=True)
 
-            result = self.test_runner.run_speed_test()
+            if self.device_type == "FarLink Edge":
+                active_cfg = self.config_manager.active_config
+                duration = int(active_cfg.get("iperf_duration", 5))
+                streams = int(active_cfg.get("iperf_streams", 1))
+                target_master = self.master_ip or active_cfg.get("master_ip")
+                result = self.test_runner.run_edge_dual_test(
+                    master_ip=target_master,
+                    iperf_duration=duration,
+                    iperf_streams=streams,
+                )
+            else:
+                result = self.test_runner.run_speed_test()
+
+            result["connection_type"] = conn.get("type", "Ethernet")
+            result["interface"] = conn.get("interface", "eth0")
             self.sync_manager.enqueue_result(result)
             
             # Try syncing if online
@@ -307,8 +340,16 @@ class FarlinkAgent:
             self.server_connected = self.api_client.is_connected
             pending_cnt = self.sync_manager.get_pending_count()
 
-            dl_val = result.get('download_mbps')
-            dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+            if self.device_type == "FarLink Edge":
+                m_bw = result.get("master_connection", {}).get("bandwidth_mbps")
+                i_dl = result.get("internet_connection", {}).get("download_mbps")
+                m_str = f"Master: {m_bw:.1f}M" if m_bw is not None else "Master: -"
+                i_str = f"Inet: {i_dl:.1f}M" if i_dl is not None else "Inet: -"
+                dl_text = f"{m_str} | {i_str}"
+            else:
+                dl_val = result.get('download_mbps')
+                dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+
             if self.server_connected:
                 self.latest_notification = f"Test finished ({dl_text}). Synced with cloud."
             else:
@@ -375,13 +416,36 @@ class FarlinkAgent:
             status_color="#38bdf8",
             conn_type=conn.get("type", "Ethernet"),
         )
-        res = self.test_runner.run_speed_test(server_ip=server_ip)
+        if self.device_type == "FarLink Edge":
+            active_cfg = self.config_manager.active_config
+            duration = int(active_cfg.get("iperf_duration", 5))
+            streams = int(active_cfg.get("iperf_streams", 1))
+            target_master = server_ip or self.master_ip or active_cfg.get("master_ip")
+            res = self.test_runner.run_edge_dual_test(
+                master_ip=target_master,
+                iperf_duration=duration,
+                iperf_streams=streams,
+            )
+        else:
+            res = self.test_runner.run_speed_test(server_ip=server_ip)
+
+        res["connection_type"] = conn.get("type", "Ethernet")
+        res["interface"] = conn.get("interface", "eth0")
         self.sync_manager.enqueue_result(res)
         self.sync_manager.sync_pending()
         self.server_connected = self.api_client.is_connected
         self.heartbeat_worker.last_test_at = res["finished_at"]
-        dl_val = res.get('download_mbps')
-        dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+
+        if self.device_type == "FarLink Edge":
+            m_bw = res.get("master_connection", {}).get("bandwidth_mbps")
+            i_dl = res.get("internet_connection", {}).get("download_mbps")
+            m_str = f"Master: {m_bw:.1f}M" if m_bw is not None else "Master: -"
+            i_str = f"Inet: {i_dl:.1f}M" if i_dl is not None else "Inet: -"
+            dl_text = f"{m_str} | {i_str}"
+        else:
+            dl_val = res.get('download_mbps')
+            dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+
         self.latest_notification = f"Remote test completed ({dl_text})."
         self.lcd.show_test_result(
             dl_mbps=res.get("download_mbps"),
@@ -471,6 +535,7 @@ class FarlinkAgent:
                         logger.info("[RECONNECTED] Server connection restored. Synchronizing queued data...")
                         self.auth.register_device()
                         synced = self.sync_manager.sync_pending()
+                        self._sync_sqlite_logs()
                         if self.config_manager.fetch_and_sync():
                             self._apply_config_updates()
                         self.latest_notification = f"Server reconnected! {synced} test results automatically synced."
@@ -481,6 +546,7 @@ class FarlinkAgent:
                 if sync_counter >= sync_interval:
                     if self.server_connected:
                         self.sync_manager.sync_pending()
+                        self._sync_sqlite_logs()
                         if self.config_manager.fetch_and_sync():
                             self._apply_config_updates()
                     sync_counter = 0

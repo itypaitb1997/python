@@ -112,6 +112,7 @@ class TestRunner:
             upload_mbps = speed.get("upload_mbps")
 
         finished_at = get_utc_now()
+        conn = NetworkDiagnostics.get_connection_type()
 
         return {
             "id": test_id,
@@ -125,4 +126,103 @@ class TestRunner:
             "latency_ms": latency,
             "jitter_ms": jitter_ms,
             "packet_loss": packet_loss,
+            "connection_type": conn.get("type", "Ethernet"),
+            "interface": conn.get("interface", "eth0"),
         }
+
+    def run_edge_dual_test(
+        self,
+        master_ip: Optional[str] = None,
+        iperf_duration: int = 5,
+        iperf_streams: int = 1,
+    ) -> Dict[str, Any]:
+        """Dual-connection diagnostic for FarLink Edge:
+        1. Connection to Master (iPerf3 bandwidth, latency, jitter, packet loss)
+        2. Connection to Internet (ping latency, jitter, loss & HTTP bandwidth)
+        """
+        started_at = get_utc_now()
+        start_ts = time.time()
+        test_id = str(uuid.uuid4())
+
+        # Resolve Master target if none provided
+        target_master = master_ip
+        if not target_master:
+            gw = NetworkDiagnostics.get_default_gateway()
+            if gw:
+                target_master = gw
+
+        # 1. Measure Connection to Master
+        master_conn = {
+            "target": target_master,
+            "connected": False,
+            "latency_ms": None,
+            "jitter_ms": None,
+            "packet_loss": None,
+            "bandwidth_mbps": None,
+        }
+        if target_master:
+            logger.info(f"[EDGE DUAL TEST] Testing Connection 1 (Master: {target_master})...")
+            m_ping = NetworkDiagnostics.ping_latency(target_master, count=3)
+            master_conn["latency_ms"] = m_ping.get("latency_ms")
+            master_conn["jitter_ms"] = m_ping.get("jitter_ms")
+            master_conn["packet_loss"] = m_ping.get("loss_percent", 0.0)
+
+            # iPerf3 throughput to Master
+            iperf_res = self.iperf.run_client(
+                server_ip=target_master,
+                duration=iperf_duration,
+                streams=iperf_streams
+            )
+            master_conn["bandwidth_mbps"] = iperf_res.get("bandwidth_mbps")
+            if iperf_res.get("jitter_ms") is not None:
+                master_conn["jitter_ms"] = iperf_res.get("jitter_ms")
+            if iperf_res.get("packet_loss") is not None:
+                master_conn["packet_loss"] = iperf_res.get("packet_loss")
+            master_conn["connected"] = bool(
+                master_conn["latency_ms"] is not None or master_conn["bandwidth_mbps"] is not None
+            )
+
+        # 2. Measure Connection to Internet
+        logger.info("[EDGE DUAL TEST] Testing Connection 2 (Internet: 8.8.8.8 & Web)...")
+        net_ping = NetworkDiagnostics.ping_latency("8.8.8.8", count=3)
+        inet_speed = self._measure_http_bandwidth()
+        internet_conn = {
+            "target": "8.8.8.8",
+            "connected": bool(net_ping.get("latency_ms") is not None or inet_speed.get("download_mbps") is not None),
+            "latency_ms": net_ping.get("latency_ms"),
+            "jitter_ms": net_ping.get("jitter_ms"),
+            "packet_loss": net_ping.get("loss_percent", 0.0),
+            "download_mbps": inet_speed.get("download_mbps"),
+            "upload_mbps": inet_speed.get("upload_mbps"),
+        }
+
+        finished_at = get_utc_now()
+
+        # Primary metrics for FarLink Edge represent connection to Master,
+        # with Internet bandwidth as fallback or secondary.
+        dl_mbps = master_conn["bandwidth_mbps"] if master_conn["bandwidth_mbps"] is not None else internet_conn["download_mbps"]
+        ul_mbps = master_conn["bandwidth_mbps"] if master_conn["bandwidth_mbps"] is not None else internet_conn["upload_mbps"]
+        lat_ms = master_conn["latency_ms"] if master_conn["latency_ms"] is not None else internet_conn["latency_ms"]
+        jit_ms = master_conn["jitter_ms"] if master_conn["jitter_ms"] is not None else internet_conn["jitter_ms"]
+        loss_val = master_conn["packet_loss"] if master_conn["packet_loss"] is not None else internet_conn["packet_loss"]
+
+        conn = NetworkDiagnostics.get_connection_type()
+
+        return {
+            "id": test_id,
+            "test_type": "edge_dual",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "rtc_time": started_at,
+            "duration_seconds": round(time.time() - start_ts, 2),
+            "download_mbps": dl_mbps,
+            "upload_mbps": ul_mbps,
+            "latency_ms": lat_ms,
+            "jitter_ms": jit_ms,
+            "packet_loss": loss_val,
+            "connection_type": conn.get("type", "Ethernet"),
+            "interface": conn.get("interface", "eth0"),
+            "master_connection": master_conn,
+            "internet_connection": internet_conn,
+        }
+

@@ -234,7 +234,50 @@ class TestFarlinkAgent(unittest.TestCase):
         self.assertIn("DISCONNECTED", card_text)
         self.assertIn("STANDALONE OFFLINE", card_text)
 
+    def test_config_gpio_pins_protected(self):
+        cfg_mgr = ConfigManager(self.db, self.api)
+        malicious_cfg = {
+            "version": 4,
+            "heartbeat_interval": 45,
+            "pin_start": 99,
+            "pin_reset": 100,
+            "FARLINK_PIN_START": 99,
+            "FARLINK_PIN_RESET": 100,
+        }
+        self.assertTrue(cfg_mgr.apply_config(malicious_cfg))
+        active = cfg_mgr.active_config
+        self.assertNotIn("pin_start", active)
+        self.assertNotIn("pin_reset", active)
+        self.assertNotIn("FARLINK_PIN_START", active)
+        self.assertNotIn("FARLINK_PIN_RESET", active)
+        self.assertEqual(active["heartbeat_interval"], 45)
+
+    def test_sqlite_logging_persistence(self):
+        from app.logger import setup_logger
+        test_logger = setup_logger("test_sqlite_log", level=10, db_path=self.db_path)
+        test_logger.info("Test message for SQLite log storage")
+        test_logger.warning("Warning message in SQLite log")
+
+        logs = self.db.get_agent_logs(limit=10)
+        self.assertTrue(len(logs) >= 2)
+        messages = [l["message"] for l in logs]
+        self.assertTrue(any("Test message for SQLite log storage" in m for m in messages))
+        self.assertTrue(any("Warning message in SQLite log" in m for m in messages))
+
+    def test_edge_dual_connection_measurement(self):
+        from app.test_runner import TestRunner
+        runner = TestRunner()
+        # Run edge dual test with mock / loopback master
+        res = runner.run_edge_dual_test(master_ip="127.0.0.1", iperf_duration=1)
+        self.assertEqual(res["test_type"], "edge_dual")
+        self.assertIn("master_connection", res)
+        self.assertIn("internet_connection", res)
+        self.assertEqual(res["master_connection"]["target"], "127.0.0.1")
+        self.assertIn("latency_ms", res["master_connection"])
+        self.assertIn("latency_ms", res["internet_connection"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

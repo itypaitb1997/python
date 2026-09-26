@@ -14,7 +14,7 @@ ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(dotenv_path=ENV_PATH)
+    load_dotenv(dotenv_path=ENV_PATH, override=True)
 except ImportError:
     if ENV_PATH.exists():
         with open(ENV_PATH, "r", encoding="utf-8") as f:
@@ -22,25 +22,43 @@ except ImportError:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
-                    k, v = k.strip(), v.strip().strip("'\"")
-                    if k not in os.environ:
-                        os.environ[k] = v
+                    k = k.strip()
+                    v = v.split("#")[0].strip().strip("'\"")
+                    os.environ[k] = v
 
 
+def _get_env_int(key: str, default: int) -> int:
+    val = os.getenv(key)
+    if val is not None:
+        try:
+            return int(str(val).split("#")[0].strip())
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _get_env_str(key: str, default: str) -> str:
+    val = os.getenv(key)
+    if val is not None:
+        clean = str(val).split("#")[0].strip().strip("'\"")
+        if clean:
+            return clean
+    return default
 
 
 @dataclass
 class AppConfig:
-    api_url: str = os.getenv("FARLINK_API_URL", "http://192.168.1.2:5000/api")
-    db_path: str = os.getenv("FARLINK_DB_PATH", "farlink.db")
-    log_path: str = os.getenv("FARLINK_LOG_PATH", "farlink.log")
-    log_level: str = os.getenv("FARLINK_LOG_LEVEL", "INFO")
-    heartbeat_interval: int = int(os.getenv("FARLINK_HEARTBEAT_INTERVAL", str(DEFAULT_HEARTBEAT_INTERVAL)))
-    http_timeout: int = int(os.getenv("FARLINK_HTTP_TIMEOUT", str(DEFAULT_HTTP_TIMEOUT)))
-    pin_start: int = int(os.getenv("FARLINK_PIN_START", str(DEFAULT_PIN_START)))
-    pin_reset: int = int(os.getenv("FARLINK_PIN_RESET", str(DEFAULT_PIN_RESET)))
-    device_type: str = os.getenv("FARLINK_DEVICE_TYPE", "FarLink Go")
-    device_mode: str = os.getenv("FARLINK_DEVICE_MODE", "Standalone")
+    api_url: str = _get_env_str("FARLINK_API_URL", "http://127.0.0.1:5000/api")
+    db_path: str = _get_env_str("FARLINK_DB_PATH", "farlink_agent.db")
+    log_path: str = _get_env_str("FARLINK_LOG_PATH", "farlink_agent.log")
+    log_level: str = _get_env_str("FARLINK_LOG_LEVEL", "INFO")
+    heartbeat_interval: int = _get_env_int("FARLINK_HEARTBEAT_INTERVAL", DEFAULT_HEARTBEAT_INTERVAL)
+    http_timeout: int = _get_env_int("FARLINK_HTTP_TIMEOUT", DEFAULT_HTTP_TIMEOUT)
+    pin_start: int = _get_env_int("FARLINK_PIN_START", DEFAULT_PIN_START)
+    pin_reset: int = _get_env_int("FARLINK_PIN_RESET", DEFAULT_PIN_RESET)
+    device_type: str = _get_env_str("FARLINK_DEVICE_TYPE", "FarLink Go")
+    device_mode: str = _get_env_str("FARLINK_DEVICE_MODE", "Standalone")
 
 
 config = AppConfig()
+

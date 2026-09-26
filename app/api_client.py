@@ -31,6 +31,20 @@ class ApiClient:
         self._device_uuid: Optional[str] = None
         self.is_connected: bool = False
         self.last_error: Optional[str] = None
+        try:
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+            retry_strategy = Retry(
+                total=2,
+                backoff_factor=0.3,
+                status_forcelist=[502, 503, 504],
+                raise_on_status=False,
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
+        except Exception:
+            pass
 
     def set_device_uuid(self, device_uuid: Optional[str]) -> None:
         self._device_uuid = device_uuid
@@ -46,12 +60,12 @@ class ApiClient:
         else:
             self.session.headers.pop("Authorization", None)
 
-    def check_connection(self, timeout: int = 2) -> bool:
+    def check_connection(self, timeout: int = 5) -> bool:
         """Quick health probe to check if cloud server is reachable."""
         url = f"{self.base_url}/health"
         try:
             resp = self.session.get(url, timeout=timeout)
-            self.is_connected = (resp.status_code in (200, 404))  # Any response means host reached
+            self.is_connected = (resp.status_code in (200, 204, 404))  # Any response means host reached
             self.last_error = None if self.is_connected else f"HTTP {resp.status_code}"
             return self.is_connected
         except (requests.ConnectionError, requests.Timeout) as e:

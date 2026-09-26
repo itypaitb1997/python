@@ -74,6 +74,7 @@ class FarlinkAgent:
             self.iperf_server_proc = self.test_runner.iperf.start_server_process()
 
         self.server_connected: bool = False
+        self._consecutive_probe_failures: int = 0
         self.latest_notification: str = f"Initializing {self.device_type} Agent ({self.device_mode})..."
         self.running = True
         self.last_synced_log_id: int = self.db.get_latest_agent_log_id()
@@ -524,10 +525,17 @@ class FarlinkAgent:
                     self._check_master_connectivity()
                     master_check_counter = 0
 
-                # Periodically probe server status
+                # Periodically probe server status with hysteresis
                 if connection_check_counter >= 15:
                     prev_state = self.server_connected
-                    self.server_connected = self.api_client.check_connection(timeout=2)
+                    probe_ok = self.api_client.check_connection(timeout=5)
+                    if probe_ok:
+                        self._consecutive_probe_failures = 0
+                        self.server_connected = True
+                    else:
+                        self._consecutive_probe_failures += 1
+                        if self._consecutive_probe_failures >= 2:
+                            self.server_connected = False
                     connection_check_counter = 0
 
                     # Detect transition from offline -> online

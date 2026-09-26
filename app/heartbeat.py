@@ -77,7 +77,7 @@ class HeartbeatWorker(threading.Thread):
         }
 
         try:
-            resp = self.api_client.post("agent/heartbeat", json=payload, max_retries=1)
+            resp = self.api_client.post("agent/heartbeat", json=payload, max_retries=3)
             if resp.status_code in (200, 201):
                 logger.debug("Heartbeat successfully sent")
                 return True

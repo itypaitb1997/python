@@ -75,6 +75,8 @@ class FarlinkAgent:
 
         self.server_connected: bool = False
         self._consecutive_probe_failures: int = 0
+        self._test_lock = threading.Lock()
+        self._is_test_running: bool = False
         self.latest_notification: str = f"Initializing {self.device_type} Agent ({self.device_mode})..."
         self.running = True
         self.last_synced_log_id: int = self.db.get_latest_agent_log_id()
@@ -307,7 +309,11 @@ class FarlinkAgent:
             logger.debug(f"Display render error: {e}")
 
     def on_start_button(self) -> None:
+        if not self._test_lock.acquire(blocking=False):
+            logger.info("Test already in progress. Ignoring duplicate trigger.")
+            return
         try:
+            self._is_test_running = True
             logger.info("Start test triggered")
             self.latest_notification = "Running diagnostic speed test... Please wait."
             conn = NetworkDiagnostics.get_connection_type()
@@ -371,6 +377,12 @@ class FarlinkAgent:
             logger.error(f"Error executing speed test: {e}", exc_info=True)
             self.latest_notification = f"Test warning: {e}"
             self._render_dashboard(test_running=False)
+        finally:
+            self._is_test_running = False
+            try:
+                self._test_lock.release()
+            except RuntimeError:
+                pass
 
     def on_reset_button(self) -> None:
         logger.info("Reset triggered by physical button")
@@ -409,56 +421,67 @@ class FarlinkAgent:
         self._render_dashboard()
 
     def run_test_command(self, payload: Dict[str, Any]) -> bool:
-        server_ip = payload.get("server_ip")
-        conn = NetworkDiagnostics.get_connection_type()
-        self.lcd.update_dashboard(
-            device_code=self.identity.claim_code,
-            status_text="Running test...",
-            status_color="#38bdf8",
-            conn_type=conn.get("type", "Ethernet"),
-        )
-        if self.device_type == "FarLink Edge":
-            active_cfg = self.config_manager.active_config
-            duration = int(active_cfg.get("iperf_duration", 5))
-            streams = int(active_cfg.get("iperf_streams", 1))
-            target_master = server_ip or self.master_ip or active_cfg.get("master_ip")
-            res = self.test_runner.run_edge_dual_test(
-                master_ip=target_master,
-                iperf_duration=duration,
-                iperf_streams=streams,
+        if not self._test_lock.acquire(blocking=False):
+            logger.info("Test already in progress. Rejecting concurrent remote test.")
+            return False
+        try:
+            self._is_test_running = True
+            server_ip = payload.get("server_ip")
+            conn = NetworkDiagnostics.get_connection_type()
+            self.lcd.update_dashboard(
+                device_code=self.identity.claim_code,
+                status_text="Running test...",
+                status_color="#38bdf8",
+                conn_type=conn.get("type", "Ethernet"),
             )
-        else:
-            res = self.test_runner.run_speed_test(server_ip=server_ip)
+            if self.device_type == "FarLink Edge":
+                active_cfg = self.config_manager.active_config
+                duration = int(active_cfg.get("iperf_duration", 5))
+                streams = int(active_cfg.get("iperf_streams", 1))
+                target_master = server_ip or self.master_ip or active_cfg.get("master_ip")
+                res = self.test_runner.run_edge_dual_test(
+                    master_ip=target_master,
+                    iperf_duration=duration,
+                    iperf_streams=streams,
+                )
+            else:
+                res = self.test_runner.run_speed_test(server_ip=server_ip)
 
-        res["connection_type"] = conn.get("type", "Ethernet")
-        res["interface"] = conn.get("interface", "eth0")
-        self.sync_manager.enqueue_result(res)
-        self.sync_manager.sync_pending()
-        self.server_connected = self.api_client.is_connected
-        self.heartbeat_worker.last_test_at = res["finished_at"]
+            res["connection_type"] = conn.get("type", "Ethernet")
+            res["interface"] = conn.get("interface", "eth0")
+            self.sync_manager.enqueue_result(res)
+            self.sync_manager.sync_pending()
+            self.server_connected = self.api_client.is_connected
+            self.heartbeat_worker.last_test_at = res["finished_at"]
 
-        if self.device_type == "FarLink Edge":
-            m_bw = res.get("master_connection", {}).get("bandwidth_mbps")
-            i_dl = res.get("internet_connection", {}).get("download_mbps")
-            m_str = f"Master: {m_bw:.1f}M" if m_bw is not None else "Master: -"
-            i_str = f"Inet: {i_dl:.1f}M" if i_dl is not None else "Inet: -"
-            dl_text = f"{m_str} | {i_str}"
-        else:
-            dl_val = res.get('download_mbps')
-            dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
+            if self.device_type == "FarLink Edge":
+                m_bw = res.get("master_connection", {}).get("bandwidth_mbps")
+                i_dl = res.get("internet_connection", {}).get("download_mbps")
+                m_str = f"Master: {m_bw:.1f}M" if m_bw is not None else "Master: -"
+                i_str = f"Inet: {i_dl:.1f}M" if i_dl is not None else "Inet: -"
+                dl_text = f"{m_str} | {i_str}"
+            else:
+                dl_val = res.get('download_mbps')
+                dl_text = f"DL: {dl_val:.1f} Mbps" if dl_val is not None else "DL: -"
 
-        self.latest_notification = f"Remote test completed ({dl_text})."
-        self.lcd.show_test_result(
-            dl_mbps=res.get("download_mbps"),
-            ul_mbps=res.get("upload_mbps"),
-            latency=res.get("latency_ms"),
-            jitter=res.get("jitter_ms"),
-            device_code=self.identity.claim_code,
-            status_text="Test complete",
-            conn_type=conn.get("type", "Ethernet"),
-        )
-        self._render_dashboard(last_test=res)
-        return True
+            self.latest_notification = f"Remote test completed ({dl_text})."
+            self.lcd.show_test_result(
+                dl_mbps=res.get("download_mbps"),
+                ul_mbps=res.get("upload_mbps"),
+                latency=res.get("latency_ms"),
+                jitter=res.get("jitter_ms"),
+                device_code=self.identity.claim_code,
+                status_text="Test complete",
+                conn_type=conn.get("type", "Ethernet"),
+            )
+            self._render_dashboard(last_test=res)
+            return True
+        finally:
+            self._is_test_running = False
+            try:
+                self._test_lock.release()
+            except RuntimeError:
+                pass
 
     def start(self) -> None:
         logger.info(f"Agent Device UUID: {self.identity.device_uuid}")
@@ -557,6 +580,12 @@ class FarlinkAgent:
                         self._sync_sqlite_logs()
                         if self.config_manager.fetch_and_sync():
                             self._apply_config_updates()
+
+                    # Trigger automated periodic benchmark test per configured sync_interval
+                    if not self._is_test_running:
+                        logger.info(f"[AUTO BENCHMARK] Scheduled interval reached ({sync_interval}s). Running auto benchmark...")
+                        threading.Thread(target=self.on_start_button, daemon=True).start()
+
                     sync_counter = 0
 
                 # Live periodic refresh
